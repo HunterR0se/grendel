@@ -84,14 +84,16 @@ The system provides comprehensive and detailed logs of each stage, including add
 1. **Download the Pre-compiled Binary:**
 
     ```bash
-    wget [COMING SOON] -O grendel
+    wget https://github.com/HunterRose42/grendel/blob/main/bin/grendel -O grendel
+    wget https://github.com/HunterRose42/grendel/blob/main/bin/libkeygen.so -O grendel
     ```
 
 2. **Make it Executable and Move to System Path:**
 
     ```bash
     chmod +x grendel
-    sudo mv grendel /usr/local/bin/
+    sudo mv bin/grendel /usr/local/bin/
+    sudo mv bin/libkeygen.so /usr/local/lib
     ```
 
 3. **Verify Installation:**
@@ -354,7 +356,7 @@ The actual probability of randomly generating a key that matches an existing add
 
 #### Conclusion
 
-Given the rates you've provided and a realistic probability of finding a valid Bitcoin address, it could take around 121.8 years or more to find a single valid address (best case scenario). This highlights the impracticality of brute-forcing Bitcoin addresses to find ones with non-zero balances.
+Given the current generation and matching rater and a realistic probability of finding a valid Bitcoin address, it could take around 121.8 years or more to find a single valid address (best case scenario). This highlights the impracticality of brute-forcing Bitcoin addresses to find ones with non-zero balances.
 
 ## License
 
