@@ -91,7 +91,7 @@ The system provides comprehensive and detailed logs of each stage, including add
 2. **Make it Executable and Move to System Path:**
 
     ```bash
-    chmod +x grendel
+    chmod +x bin/grendel
     sudo mv bin/grendel /usr/local/bin/
     sudo mv bin/libkeygen.so /usr/local/lib
     ```
