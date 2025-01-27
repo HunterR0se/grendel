@@ -79,7 +79,7 @@ The system provides comprehensive and detailed logs of each stage, including add
 
 - Note the efficient use of RAM, the different address types being generated and matched, the lack of dropped addresses being matched, and the consistency of the number of generated and matched addresses -- about ~1.7MM per second, and even more as the system ramps up and the cache becomes stable.
 
-### Download Binary (Coming Soon)
+### Download Binary
 
 1. **Download the Pre-compiled Binary:**
 
