@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -66,80 +65,46 @@ func (g *CUDAGenerator) Generate(count int) ([]*btcecv2.PrivateKey, []string, []
 		count = g.gpuGen.batchSize
 	}
 
+	// Pre-allocate all slices
 	hostBuffer := make([]KeyAddressData, count)
-	keys := make([]*btcecv2.PrivateKey, count)
 	addrs := make([]string, count)
 	types := make([]generator.AddressType, count)
+	// Only allocate private keys when needed
+	keys := make([]*btcecv2.PrivateKey, count)
 
+	// Generate on GPU
 	if err := g.generateCombined(hostBuffer, count); err != nil {
 		return nil, nil, nil, err
 	}
 
-	resultChan := make(chan result, constants.ChannelBuffer)
-	var wg sync.WaitGroup
+	// Process results without creating private keys
 	var legacyCount, segwitCount, nativeCount uint64
 
-	chunkSize := count / constants.NumWorkers
-	if chunkSize < 1000 {
-		chunkSize = 1000
-	}
-
-	for start := 0; start < count; start += chunkSize {
-		wg.Add(1)
-		end := start + chunkSize
-		if end > count {
-			end = count
+	// Use a single loop instead of goroutines for this part
+	for i := 0; i < count; i++ {
+		addr, addrType, err := createAddressFromHash160(
+			hostBuffer[i].Hash160[:],
+			hostBuffer[i].AddressType,
+		)
+		if err != nil {
+			continue
 		}
 
-		go func(start, end int) {
-			defer wg.Done()
-			localLegacy := uint64(0)
-			localSegwit := uint64(0)
-			localNative := uint64(0)
+		addrs[i] = addr
+		types[i] = addrType
 
-			for i := start; i < end; i++ {
-				addr, addrType, err := createAddressFromHash160(
-					hostBuffer[i].Hash160[:],
-					hostBuffer[i].AddressType,
-				)
-				if err != nil {
-					continue
-				}
-				privKey, _ := btcecv2.PrivKeyFromBytes(hostBuffer[i].PrivateKey[:])
-
-				switch hostBuffer[i].AddressType {
-				case 0:
-					localLegacy++
-				case 1:
-					localSegwit++
-				case 2:
-					localNative++
-				}
-
-				select {
-				case resultChan <- result{i, privKey, addr, addrType}:
-				default:
-					constants.TotalDroppedAddresses.Add(1)
-				}
-			}
-
-			atomic.AddUint64(&legacyCount, localLegacy)
-			atomic.AddUint64(&segwitCount, localSegwit)
-			atomic.AddUint64(&nativeCount, localNative)
-		}(start, end)
+		// Count stats
+		switch hostBuffer[i].AddressType {
+		case 0:
+			atomic.AddUint64(&legacyCount, 1)
+		case 1:
+			atomic.AddUint64(&segwitCount, 1)
+		case 2:
+			atomic.AddUint64(&nativeCount, 1)
+		}
 	}
 
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	for r := range resultChan {
-		keys[r.idx] = r.privKey
-		addrs[r.idx] = r.addr
-		types[r.idx] = r.addrType
-	}
-
+	// Update stats once at the end
 	constants.GlobalStats.Lock()
 	constants.GlobalStats.LegacyCount += int64(legacyCount)
 	constants.GlobalStats.SegwitCount += int64(segwitCount)
@@ -153,29 +118,36 @@ func (g *CUDAGenerator) Generate(count int) ([]*btcecv2.PrivateKey, []string, []
 func NewCUDAGenerator(config *generator.Config) (*CUDAGenerator, error) {
 	count, err := cuda.GetDeviceCount()
 	if err != cuda.CudaSuccess {
-		return nil, fmt.Errorf("CUDA error: %d", err)
+		return nil, fmt.Errorf("no CUDA devices found")
 	}
 
 	if count == 0 {
-		return nil, fmt.Errorf("No CUDA devices found")
+		return nil, fmt.Errorf("no CUDA devices available")
 	}
 
-	if err := cuda.SetDevice(0); err != cuda.CudaSuccess {
+	err = cuda.SetDevice(0)
+	if err != cuda.CudaSuccess {
 		if err == cuda.CudaErrorDevicesUnavailable {
 			return nil, fmt.Errorf("GPU is currently in use by another application")
 		}
 		return nil, fmt.Errorf("CUDA error setting device: %d", cuda.GetLastError())
 	}
 
+	// Add back the gpuGen initialization that I removed
 	gpuGen, gpuErr := NewGPUKeyGenerator(constants.GPUBatchBufferSize)
 	if gpuErr != nil {
 		return nil, fmt.Errorf("failed to initialize GPU generator: %v", gpuErr)
 	}
 
+	lastErr := cuda.GetLastError()
+	if lastErr != cuda.CudaSuccess {
+		return nil, fmt.Errorf("CUDA error: %d", lastErr)
+	}
+
 	return &CUDAGenerator{
 		pool:   generator.NewRNGPool(constants.RNGPoolSize),
 		stats:  new(generator.Stats),
-		gpuGen: gpuGen,
+		gpuGen: gpuGen, // This was missing!
 		gpuLog: log.New(os.Stdout, "", 0),
 	}, nil
 }

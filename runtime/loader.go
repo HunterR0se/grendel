@@ -1,7 +1,8 @@
-package main
+package runtime
 
 import (
 	"Grendel/constants"
+	"Grendel/generator"
 	"Grendel/gpu"
 	"Grendel/loader"
 	"Grendel/logger"
@@ -20,25 +21,25 @@ import (
 	"github.com/shirou/gopsutil/mem"
 )
 
-func initialize(genMode, debugMode, forceReparse bool, gpuInfo gpu.GPUInfo, cpuMode, gpuMode bool) (*AppContext, gpu.Generator, error) {
+func Initialize(genMode, debugMode, forceReparse bool, gpuInfo gpu.GPUInfo, cpuMode, gpuMode bool) (*AppContext, gpu.Generator, error) {
 	ctx := &AppContext{
-		localLog:     log.New(os.Stdout, "", 0),
-		shutdownChan: make(chan struct{}),
-		genMode:      genMode,
-		debugMode:    debugMode,
-		forceReparse: forceReparse,
-		doneChan:     make(chan struct{}), // shutdown
-		wg:           sync.WaitGroup{},    // waitgroup
-		gpuInfo:      gpuInfo,             // for GPU
-		cpuMode:      cpuMode,
-		gpuMode:      gpuMode, // Add this line
+		LocalLog:     log.New(os.Stdout, "", 0),
+		ShutdownChan: make(chan struct{}),
+		GenMode:      genMode,
+		DebugMode:    debugMode,
+		ForceReparse: forceReparse,
+		DoneChan:     make(chan struct{}), // shutdown
+		Wg:           sync.WaitGroup{},    // waitgroup
+		GpuInfo:      gpuInfo,             // for GPU
+		CpuMode:      cpuMode,
+		GpuMode:      gpuMode, // Add this line
 	}
 
 	// Set up logger constant
 	constants.Logger = log.New(os.Stdout, "", log.LstdFlags)
-	constants.GeneratorMode = ctx.genMode
+	constants.GeneratorMode = ctx.GenMode
 
-	if ctx.debugMode {
+	if ctx.DebugMode {
 		constants.DebugMode = true
 	}
 
@@ -46,39 +47,38 @@ func initialize(genMode, debugMode, forceReparse bool, gpuInfo gpu.GPUInfo, cpuM
 	logSystemInfo(ctx)
 
 	// Setup paths
-	ctx.baseDir = getBaseDir()
-	ctx.parserPath = filepath.Join(ctx.baseDir, ".bitcoin")
-	ctx.dbPath = filepath.Join(ctx.baseDir, constants.AddressDBPath)
-	ctx.addressPath = filepath.Join(ctx.baseDir, constants.KnownAddressesPath)
+	ctx.BaseDir = utils.GetBaseDir()
+	ctx.ParserPath = filepath.Join(ctx.BaseDir, ".bitcoin")
+	ctx.DbPath = filepath.Join(ctx.BaseDir, constants.AddressDBPath)
 
 	// Create bitcoin directory if needed
-	if err := createBitcoinDir(ctx.baseDir); err != nil {
+	if err := createBitcoinDir(ctx.BaseDir); err != nil {
 		return nil, nil, fmt.Errorf("failed to create bitcoin directory: %w", err)
 	}
 
 	// Initialize parser
-	newParser, err := parser.NewParser(ctx.localLog, ctx.parserPath, ctx.dbPath, ctx.forceReparse)
+	newParser, err := parser.NewParser(ctx.LocalLog, ctx.ParserPath, ctx.DbPath, ctx.ForceReparse)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize parser: %w", err)
 	}
-	ctx.parser = newParser
+	ctx.Parser = newParser
 
 	// Initialize parser stats
-	ctx.parser.Stats = &constants.AddressCategory{}
+	ctx.Parser.Stats = &constants.AddressCategory{}
 
 	// Verify database
-	if err := verifyDatabase(ctx.parser); err != nil {
+	if err := verifyDatabase(ctx.Parser); err != nil {
 		return nil, nil, fmt.Errorf("database verification failed: %w", err)
 	}
 
 	// Set up shutdown handler
-	ctx.shutdownChan = setupGracefulShutdown(ctx.localLog, ctx.shutdownChan, ctx.doneChan)
+	ctx.ShutdownChan = SetupGracefulShutdown(ctx.LocalLog, ctx.ShutdownChan, ctx.DoneChan)
 
 	// Initialize generator
 	var generatorInstance gpu.Generator
-	if ctx.cpuMode {
+	if ctx.CpuMode {
 		generatorInstance, err = gpu.NewCPUGenerator(nil)
-	} else if ctx.gpuMode && ctx.gpuInfo.Available && ctx.gpuInfo.UsingCUDA {
+	} else if ctx.GpuMode && ctx.GpuInfo.Available && ctx.GpuInfo.UsingCUDA {
 		generatorInstance, err = gpu.NewCUDAGenerator(nil)
 	} else {
 		generatorInstance, err = gpu.NewCPUGenerator(nil) // Default to CPU
@@ -87,67 +87,67 @@ func initialize(genMode, debugMode, forceReparse bool, gpuInfo gpu.GPUInfo, cpuM
 		return nil, nil, fmt.Errorf("failed to initialize generator: %v", err)
 	}
 
-	ctx.generator = generatorInstance
+	ctx.Generator = generatorInstance
 
 	return ctx, generatorInstance, nil
 }
 
 // 2. Load blocks
-func loadBlocks(ctx *AppContext) error {
-	logger.LogHeaderStatus(ctx.localLog, constants.LogDB, "Starting the Block Loader...")
+func LoadBlocks(ctx *AppContext) error {
+	logger.LogHeaderStatus(ctx.LocalLog, constants.LogDB, "Starting the Block Loader...")
 	logger.PrintSeparator(constants.LogDB)
 
-	ctx.blockLoader = loader.NewBlockLoader(ctx.parser)
+	ctx.BlockLoader = loader.NewBlockLoader(ctx.Parser)
 
-	blockFiles, err := ctx.blockLoader.FindBlockFiles()
+	blockFiles, err := ctx.BlockLoader.FindBlockFiles()
 	if err != nil {
 		return fmt.Errorf("failed to scan for blocks: %w", err)
 	}
 
 	if len(blockFiles) == 0 {
-		logger.LogStatus(ctx.localLog, constants.LogDB, "No new blocks found to process")
-		return startBackgroundLoader(ctx)
+		logger.LogStatus(ctx.LocalLog, constants.LogDB, "No new blocks found to process")
+		return StartBackgroundLoader(ctx)
 	}
 
-	logger.LogDebug(ctx.localLog, constants.LogDB,
+	logger.LogDebug(ctx.LocalLog, constants.LogDB,
 		"Found %d blocks to process", len(blockFiles))
 
-	if err := ctx.blockLoader.LoadNewBlocks(); err != nil {
-		logger.LogError(ctx.localLog, constants.LogError, err,
+	if err := ctx.BlockLoader.LoadNewBlocks(); err != nil {
+		logger.LogError(ctx.LocalLog, constants.LogError, err,
 			"Block loading encountered errors but continuing...")
 	}
 
 	if !constants.AreAddressesLoaded {
-		count, err := ctx.parser.LoadAllAddresses()
+		count, err := ctx.Parser.LoadAllAddresses()
 		if err != nil {
-			logger.LogError(ctx.localLog, constants.LogError, err,
+			logger.LogError(ctx.LocalLog, constants.LogError, err,
 				"Failed to load addresses from database")
 		} else {
-			logger.LogStatus(ctx.localLog, constants.LogDB,
+			logger.LogStatus(ctx.LocalLog, constants.LogDB,
 				"Loaded %s addresses from database", utils.FormatWithCommas(int(count)))
-			ctx.addressesLoaded = true
+			ctx.AddressesLoaded = true
 		}
 
-		ctx.blockLoader.LogAddressSummary("Block Processing Complete", true)
+		ctx.BlockLoader.LogAddressSummary("Block Processing Complete", true)
 	}
 
-	logger.LogStatus(ctx.localLog, constants.LogDB, "Block loader successfully started.")
-	return startBackgroundLoader(ctx)
+	logger.LogStatus(ctx.LocalLog, constants.LogDB, "Block loader successfully started.")
+	return StartBackgroundLoader(ctx)
 }
 
-func startBackgroundLoader(ctx *AppContext) error {
+func StartBackgroundLoader(ctx *AppContext) error {
 	// Create a map to track processed blocks using their base names
 	processedBlocks := make(map[string]bool)
 
 	// Record initially processed blocks by their base names
-	initialFiles, err := ctx.blockLoader.FindBlockFiles()
+	initialFiles, err := ctx.BlockLoader.FindBlockFiles()
 	if err == nil {
 		for _, file := range initialFiles {
 			baseName := filepath.Base(file)
-			if ctx.parser.IsBlockProcessed(file) {
+			if ctx.Parser.IsBlockProcessed(file) {
 				processedBlocks[baseName] = true
 				if constants.DebugMode {
-					logger.LogDebug(ctx.localLog, constants.LogDB,
+					logger.LogDebug(ctx.LocalLog, constants.LogDB,
 						"Initially marking as processed: %s", baseName)
 				}
 			}
@@ -162,7 +162,7 @@ func startBackgroundLoader(ctx *AppContext) error {
 
 		for {
 			select {
-			case <-ctx.shutdownChan:
+			case <-ctx.ShutdownChan:
 				return
 			case <-ticker.C:
 				// Only scan if enough time has passed
@@ -171,9 +171,9 @@ func startBackgroundLoader(ctx *AppContext) error {
 				}
 
 				// Find any new blocks
-				currentFiles, err := ctx.blockLoader.FindBlockFiles()
+				currentFiles, err := ctx.BlockLoader.FindBlockFiles()
 				if err != nil {
-					logger.LogError(ctx.localLog, constants.LogError, err,
+					logger.LogError(ctx.LocalLog, constants.LogError, err,
 						"Failed to scan for new blocks")
 					continue
 				}
@@ -183,11 +183,11 @@ func startBackgroundLoader(ctx *AppContext) error {
 				for _, file := range currentFiles {
 					baseName := filepath.Base(file)
 					if !processedBlocks[baseName] {
-						if !ctx.parser.IsBlockProcessed(file) {
+						if !ctx.Parser.IsBlockProcessed(file) {
 							newBlocks = append(newBlocks, file)
 							processedBlocks[baseName] = true
 							if constants.DebugMode {
-								logger.LogDebug(ctx.localLog, constants.LogDB,
+								logger.LogDebug(ctx.LocalLog, constants.LogDB,
 									"Found new block to process: %s", baseName)
 							}
 						}
@@ -195,17 +195,17 @@ func startBackgroundLoader(ctx *AppContext) error {
 				}
 
 				if len(newBlocks) > 0 {
-					logger.LogDebug(ctx.localLog, constants.LogDB,
+					logger.LogDebug(ctx.LocalLog, constants.LogDB,
 						"Processing %d new blocks", len(newBlocks))
 
 					// Process only the new blocks directly
-					err = ctx.blockLoader.ProcessNewBlocks(
+					err = ctx.BlockLoader.ProcessNewBlocks(
 						newBlocks,
-						ctx.parser.BlocksProcessed,
-						ctx.parser.AddressesFound)
+						ctx.Parser.BlocksProcessed,
+						ctx.Parser.AddressesFound)
 
 					if err != nil {
-						logger.LogError(ctx.localLog, constants.LogError, err,
+						logger.LogError(ctx.LocalLog, constants.LogError, err,
 							"Failed to process new blocks")
 					}
 				}
@@ -219,66 +219,66 @@ func startBackgroundLoader(ctx *AppContext) error {
 }
 
 // 3. Start address generation
-func startAddressGeneration(ctx *AppContext) error {
-	if ctx.generator == nil {
+func StartAddressGeneration(ctx *AppContext) error {
+	if ctx.Generator == nil {
 		return fmt.Errorf("generator not initialized")
 	}
 
-	ctx.memLimits = utils.CalculateMemoryLimits()
+	ctx.MemLimits = utils.CalculateMemoryLimits()
 
 	availDisk, totalDisk := utils.GetAvailableDiskSpace()
-	logger.LogHeaderStatus(ctx.localLog, constants.LogMem,
+	logger.LogHeaderStatus(ctx.LocalLog, constants.LogMem,
 		"CPU Cores: %4d Disk: %7.1fGB Free:  %6.1fGB",
 		runtime.NumCPU(),
 		totalDisk, availDisk)
 
-	logger.LogStatus(ctx.localLog, constants.LogMem,
+	logger.LogStatus(ctx.LocalLog, constants.LogMem,
 		"Total: %6.1fGB Avail: %6.1fGB Write: %6.1fGB",
-		ctx.memLimits.Total,
-		ctx.memLimits.Available,
-		float64(ctx.memLimits.NumWorkers))
+		ctx.MemLimits.Total,
+		ctx.MemLimits.Available,
+		float64(ctx.MemLimits.NumWorkers))
 
-	logger.LogStatus(ctx.localLog, constants.LogMem,
+	logger.LogStatus(ctx.LocalLog, constants.LogMem,
 		"Block: %6.1fGB Write: %6.1fGB Comp: %7.1fGB",
-		float64(ctx.memLimits.BlockCache)/(1024*1024*1024),
-		float64(ctx.memLimits.WriteBuffer)/(1024*1024*1024),
-		float64(ctx.memLimits.CompactionSize)/(1024*1024*1024))
+		float64(ctx.MemLimits.BlockCache)/(1024*1024*1024),
+		float64(ctx.MemLimits.WriteBuffer)/(1024*1024*1024),
+		float64(ctx.MemLimits.CompactionSize)/(1024*1024*1024))
 
-	logger.LogStatus(ctx.localLog, constants.LogMem,
+	logger.LogStatus(ctx.LocalLog, constants.LogMem,
 		"Batch: %7dk Chan: %8dk RNG: %9dk",
-		ctx.memLimits.BatchSize/1000,
-		ctx.memLimits.ChannelBuffer/1000,
-		ctx.memLimits.RNGPoolSize/1000)
+		ctx.MemLimits.BatchSize/1000,
+		ctx.MemLimits.ChannelBuffer/1000,
+		ctx.MemLimits.RNGPoolSize/1000)
 
 	// ctx.addressChan = make(chan *WalletInfo, ctx.memLimits.ChannelBuffer)
-	ctx.doneChan = make(chan struct{})
-	batchSize := ctx.memLimits.BatchSize
+	ctx.DoneChan = make(chan struct{})
+	batchSize := ctx.MemLimits.BatchSize
 
-	ctx.parser.VerifyStats()
-	ctx.blockLoader.LogAddressSummary("Block Processing Complete", true)
+	ctx.Parser.VerifyStats()
+	ctx.BlockLoader.LogAddressSummary("Block Processing Complete", true)
 
 	// Start the generator goroutine
-	startGenerator(ctx, batchSize)
+	StartGenerator(ctx, batchSize)
 	// Start the address checker goroutine
-	startAddressChecker(ctx)
+	StartAddressChecker(ctx)
 	// Start memory monitoring
-	startMemoryMonitoring(ctx)
+	StartMemoryMonitoring(ctx)
 
 	return nil
 }
 
 // startGenerator handles generating addresses and managing resources.
-func startGenerator(ctx *AppContext, batchSize int) {
-	logger.LogStatus(ctx.localLog, constants.LogInfo,
+func StartGenerator(ctx *AppContext, batchSize int) {
+	logger.LogStatus(ctx.LocalLog, constants.LogInfo,
 		"Starting generator in GPU %s mode",
-		utils.BoolToEnabledDisabled(ctx.gpuMode))
+		utils.BoolToEnabledDisabled(ctx.GpuMode))
 
-	ctx.addressChan = make(chan *WalletInfo, constants.AddressCheckerBatchSize*8)
+	ctx.AddressChan = make(chan *WalletInfo, constants.AddressCheckerBatchSize*8)
 
 	// Stats logging goroutine
-	ctx.wg.Add(1) // Add wait group for stats goroutine
+	ctx.Wg.Add(1) // Add wait group for stats goroutine
 	go func() {
-		defer ctx.wg.Done()
+		defer ctx.Wg.Done()
 
 		statsTicker := time.NewTicker(constants.ImportLogInterval)
 		defer statsTicker.Stop() // Move defer inside the goroutine
@@ -289,7 +289,7 @@ func startGenerator(ctx *AppContext, batchSize int) {
 
 		for {
 			select {
-			case <-ctx.shutdownChan:
+			case <-ctx.ShutdownChan:
 				return
 			case <-statsTicker.C:
 				now := time.Now()
@@ -305,7 +305,7 @@ func startGenerator(ctx *AppContext, batchSize int) {
 				var m runtime.MemStats
 				runtime.ReadMemStats(&m)
 
-				logger.LogGeneratorStats(ctx.localLog,
+				logger.LogGeneratorStats(ctx.LocalLog,
 					float64(currentGenCount)/1e6,
 					generatedRate,
 					time.Since(startTime),
@@ -321,26 +321,26 @@ func startGenerator(ctx *AppContext, batchSize int) {
 		}
 	}()
 
-	if ctx.gpuMode && ctx.gpuInfo.Available && ctx.gpuInfo.UsingCUDA {
-		ctx.wg.Add(1)
+	if ctx.GpuMode && ctx.GpuInfo.Available && ctx.GpuInfo.UsingCUDA {
+		ctx.Wg.Add(1)
 		go func() {
-			defer ctx.wg.Done()
-			defer ctx.generator.Close()
+			defer ctx.Wg.Done()
+			defer ctx.Generator.Close()
 
 			gpuBatchSize := batchSize
 
 			for {
 				select {
-				case <-ctx.shutdownChan:
+				case <-ctx.ShutdownChan:
 					return
-				case <-ctx.doneChan:
+				case <-ctx.DoneChan:
 					return
 				default:
-					checkMemoryUsage(ctx)
+					CheckMemoryUsage(ctx)
 
-					privateKeys, addresses, addrTypes, err := ctx.generator.Generate(gpuBatchSize)
+					privateKeys, addresses, addrTypes, err := ctx.Generator.Generate(gpuBatchSize)
 					if err != nil {
-						logger.LogError(ctx.localLog, constants.LogError, err, "Address generation failed")
+						logger.LogError(ctx.LocalLog, constants.LogError, err, "Address generation failed")
 						time.Sleep(100 * time.Millisecond)
 						continue
 					}
@@ -357,13 +357,15 @@ func startGenerator(ctx *AppContext, batchSize int) {
 						for j := i; j < end; j++ {
 							if addresses[j] != "" && privateKeys[j] != nil {
 								select {
-								case ctx.addressChan <- &WalletInfo{
+								case ctx.AddressChan <- &WalletInfo{
 									Address:    addresses[j],
 									PrivateKey: privateKeys[j],
 									AddrType:   addrTypes[j],
 								}:
 								default:
 									constants.TotalDroppedAddresses.Add(1)
+									// Add this line:
+									generator.DecrementAddressType(addrTypes[j])
 								}
 							}
 						}
@@ -373,25 +375,25 @@ func startGenerator(ctx *AppContext, batchSize int) {
 		}()
 	}
 
-	if ctx.cpuMode || (!ctx.gpuMode && !ctx.gpuInfo.Available) {
-		ctx.wg.Add(1) // CPU goroutine
+	if ctx.CpuMode || (!ctx.GpuMode && !ctx.GpuInfo.Available) {
+		ctx.Wg.Add(1) // CPU goroutine
 		go func() {
-			defer ctx.wg.Done()
+			defer ctx.Wg.Done()
 			cpuGenerator := gpu.NewGenerator(false)
 			defer cpuGenerator.Close()
 
 			for {
 				select {
-				case <-ctx.shutdownChan:
+				case <-ctx.ShutdownChan:
 					return
-				case <-ctx.doneChan:
+				case <-ctx.DoneChan:
 					return
 				default:
-					checkMemoryUsage(ctx)
+					CheckMemoryUsage(ctx)
 
 					privateKeys, addresses, addrTypes, err := cpuGenerator.Generate(batchSize)
 					if err != nil {
-						logger.LogError(ctx.localLog,
+						logger.LogError(ctx.LocalLog,
 							constants.LogError,
 							err,
 							"Address generation failed")
@@ -401,7 +403,7 @@ func startGenerator(ctx *AppContext, batchSize int) {
 
 					for i := range addresses {
 						if addresses[i] != "" && privateKeys[i] != nil {
-							sendToChecker(ctx, addresses[i], privateKeys[i], addrTypes[i])
+							SendToChecker(ctx, addresses[i], privateKeys[i], addrTypes[i])
 						}
 					}
 				}
@@ -410,7 +412,7 @@ func startGenerator(ctx *AppContext, batchSize int) {
 	}
 }
 
-func testAddressMatching(ctx *AppContext) error {
+func TestAddressMatching(ctx *AppContext) error {
 	numKeys := constants.GPUTestAddresses
 	startTime := time.Now()
 	matched := 0
@@ -420,9 +422,9 @@ func testAddressMatching(ctx *AppContext) error {
 	lastProgress := 0
 
 	// Get all addresses into a slice for random selection
-	allAddresses := ctx.parser.GetAddresses()
+	allAddresses := ctx.Parser.GetAddresses()
 
-	logger.LogHeaderStatus(ctx.localLog, constants.LogCheck,
+	logger.LogHeaderStatus(ctx.LocalLog, constants.LogCheck,
 		"Testing Matching against %s addresses",
 		utils.FormatWithCommas(len(allAddresses)))
 	logger.PrintSeparator(constants.LogCheck)
@@ -432,7 +434,7 @@ func testAddressMatching(ctx *AppContext) error {
 		randomIndex := rand.Intn(len(allAddresses))
 		testAddr := allAddresses[randomIndex]
 
-		if exists, _ := ctx.parser.CheckAddress(testAddr); exists {
+		if exists, _ := ctx.Parser.CheckAddress(testAddr); exists {
 			matched++
 		}
 
@@ -440,7 +442,7 @@ func testAddressMatching(ctx *AppContext) error {
 		if i > 0 && i%interval == 0 && i/interval > lastProgress {
 			progress := (i * 100) / numKeys
 			currentRate := float64(i) / time.Since(startTime).Seconds()
-			logger.LogStatus(ctx.localLog, constants.LogCheck,
+			logger.LogStatus(ctx.LocalLog, constants.LogCheck,
 				"Progress: %d%% (%s/sec)",
 				progress,
 				utils.FormatWithCommas(int(currentRate)))
@@ -451,15 +453,15 @@ func testAddressMatching(ctx *AppContext) error {
 	duration := time.Since(startTime)
 	rate := float64(numKeys) / duration.Seconds()
 
-	logger.LogHeaderStatus(ctx.localLog, constants.LogInfo,
+	logger.LogHeaderStatus(ctx.LocalLog, constants.LogInfo,
 		"Checked %s addresses in %.3f seconds",
 		utils.FormatWithCommas(numKeys),
 		duration.Seconds())
-	logger.LogStatus(ctx.localLog, constants.LogInfo,
+	logger.LogStatus(ctx.LocalLog, constants.LogInfo,
 		"Matching rate: %s addresses/second",
 		utils.FormatWithCommas(int(rate)))
 	if matched > 0 {
-		logger.LogStatus(ctx.localLog, constants.LogInfo,
+		logger.LogStatus(ctx.LocalLog, constants.LogInfo,
 			"Found %s matching addresses!",
 			utils.FormatWithCommas(matched))
 	}
@@ -470,7 +472,7 @@ func testAddressMatching(ctx *AppContext) error {
 
 // Works with `startAddressChecker`
 // Periodic logging of System Memory usage
-func startMemoryMonitoring(ctx *AppContext) {
+func StartMemoryMonitoring(ctx *AppContext) {
 	memTicker := time.NewTicker(constants.ImportLogInterval * 30)
 	defer memTicker.Stop()
 
@@ -478,12 +480,12 @@ func startMemoryMonitoring(ctx *AppContext) {
 		select {
 		case <-memTicker.C:
 			v, _ := mem.VirtualMemory()
-			logger.LogHeaderStatus(ctx.localLog, constants.LogMem,
+			logger.LogHeaderStatus(ctx.LocalLog, constants.LogMem,
 				"Grendel Memory Used %.1fGB, Available: %.1fGB",
 				float64(v.Used)/(1024*1024*1024),      // Convert used memory to GB
 				float64(v.Available)/(1024*1024*1024)) // Convert available memory to GB
 			logger.PrintSeparator(constants.LogMem)
-		case <-ctx.shutdownChan:
+		case <-ctx.ShutdownChan:
 			return
 		}
 	}

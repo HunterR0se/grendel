@@ -1,4 +1,4 @@
-package main
+package runtime
 
 import (
 	"Grendel/constants"
@@ -18,20 +18,15 @@ import (
 	"github.com/shirou/gopsutil/mem"
 )
 
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
 // handleImport handles importing addresses from a compressed file.
 // It returns an error if the import process fails.
-func handleImport(localLog *log.Logger) error {
+func HandleImport(localLog *log.Logger) error {
 	logger.LogHeaderStatus(localLog, constants.LogInfo, "Starting Address Import")
 
 	// Initialize parser just for import
 	importParser, err := parser.NewParser(localLog,
-		filepath.Join(getBaseDir(), ".bitcoin"),
-		filepath.Join(getBaseDir(), constants.AddressDBPath),
+		filepath.Join(utils.GetBaseDir(), ".bitcoin"),
+		filepath.Join(utils.GetBaseDir(), constants.AddressDBPath),
 		true) // Force reparse during import
 
 	if err != nil {
@@ -62,30 +57,30 @@ func verifyDatabase(p *parser.Parser) error {
 
 func logSystemInfo(ctx *AppContext) {
 	v, _ := mem.VirtualMemory()
-	logger.LogStatus(ctx.localLog, constants.LogVideo,
+	logger.LogStatus(ctx.LocalLog, constants.LogVideo,
 		"System has %d Cores and %.1f GB RAM",
 		runtime.NumCPU(),
 		float64(v.Total)/(1024*1024*1024))
 
 	// Add GPU information logging
-	if ctx.gpuInfo.Available {
-		logger.LogStatus(ctx.localLog, constants.LogVideo,
+	if ctx.GpuInfo.Available {
+		logger.LogStatus(ctx.LocalLog, constants.LogVideo,
 			"%s %.0fGB VRAM (CUDA %s)",
-			ctx.gpuInfo.Name,
-			float64(ctx.gpuInfo.VRAM),
-			utils.BoolToEnabledDisabled(ctx.gpuInfo.UsingCUDA))
+			ctx.GpuInfo.Name,
+			float64(ctx.GpuInfo.VRAM),
+			utils.BoolToEnabledDisabled(ctx.GpuInfo.UsingCUDA))
 	}
 
 	logger.PrintSeparator(constants.LogVideo)
 }
 
 // checkMemoryUsage logs and manages memory usage.
-func checkMemoryUsage(ctx *AppContext) {
+func CheckMemoryUsage(ctx *AppContext) {
 	v, _ := mem.VirtualMemory()
 	usedPercentage := float64(v.Used) / float64(v.Total)
 
 	if usedPercentage > constants.MemoryTarget {
-		logger.LogStatus(ctx.localLog, constants.LogWarn,
+		logger.LogStatus(ctx.LocalLog, constants.LogWarn,
 			"Memory (%.1f%% > %.1f%% target) - %.1fGB/%.1fGB [Compacting]",
 			usedPercentage*100, constants.MemoryTarget*100,
 			float64(v.Used)/(1024*1024*1024),
@@ -97,7 +92,7 @@ func checkMemoryUsage(ctx *AppContext) {
 
 // sendToChecker sends valid addresses to the address checker
 // to compare generated addresses against addresses loaded from blocks
-func sendToChecker(ctx *AppContext, address string, privateKey *btcec.PrivateKey, addrType generator.AddressType) {
+func SendToChecker(ctx *AppContext, address string, privateKey *btcec.PrivateKey, addrType generator.AddressType) {
 	wallet := &WalletInfo{
 		Address:    address,
 		PrivateKey: privateKey,
@@ -108,7 +103,7 @@ func sendToChecker(ctx *AppContext, address string, privateKey *btcec.PrivateKey
 	maxRetries := 3
 	for i := 0; i < maxRetries; i++ {
 		select {
-		case ctx.addressChan <- wallet:
+		case ctx.AddressChan <- wallet:
 			return
 		default:
 			time.Sleep(time.Millisecond * time.Duration(i*10))
@@ -121,24 +116,9 @@ func sendToChecker(ctx *AppContext, address string, privateKey *btcec.PrivateKey
 
 // handleChannelFull logs and handles cases where the address channel is full.
 func handleChannelFull(ctx *AppContext, address string) {
-	logger.LogError(ctx.localLog, constants.LogError,
+	logger.LogError(ctx.LocalLog, constants.LogError,
 		fmt.Errorf("failed to send address '%s' to checker - channel full", address),
 		"Address not sent due to full channel buffer")
-}
-
-func getBaseDir() string {
-	baseDirOnce.Do(func() {
-		if euid := os.Geteuid(); euid == 0 {
-			cachedBaseDir = "/root"
-			return
-		}
-		if homeDir, err := os.UserHomeDir(); err == nil {
-			cachedBaseDir = homeDir
-		} else {
-			log.Fatalf("Failed to get home directory: %v", err)
-		}
-	})
-	return cachedBaseDir
 }
 
 func createBitcoinDir(baseDir string) error {

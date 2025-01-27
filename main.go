@@ -5,25 +5,18 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
 	"path/filepath"
+	"runtime/pprof"
 	"sync"
-	"syscall"
 	"time"
 
 	"Grendel/constants"
 	"Grendel/generator"
 	"Grendel/gpu"
-	"Grendel/loader"
 	"Grendel/logger"
 	"Grendel/parser"
+	"Grendel/runtime"
 	"Grendel/utils"
-
-	"github.com/btcsuite/btcd/btcec/v2"
-
-	// pprof -- flag of --profile
-	"net/http"
-	_ "net/http/pprof"
 )
 
 var (
@@ -33,43 +26,8 @@ var (
 	lastStatsTime = time.Now()
 )
 
-type WalletInfo struct {
-	Address    string
-	PrivateKey *btcec.PrivateKey
-	AddrType   generator.AddressType
-	// Seed       string // Uncomment if/when we add seed phrase support
-}
-
-var closeOnce sync.Once
-
-type AppContext struct {
-	localLog     *log.Logger
-	genMode      bool
-	debugMode    bool
-	forceReparse bool
-	cpuMode      bool
-	gpuMode      bool // Add this line
-	baseDir      string
-	parserPath   string
-	dbPath       string
-	addressPath  string
-	parser       *parser.Parser
-	shutdownChan chan struct{}
-
-	addressChan     chan *WalletInfo
-	doneChan        chan struct{}
-	memLimits       *utils.MemoryLimits
-	blockLoader     *loader.BlockLoader
-	wg              sync.WaitGroup
-	closeOnce       sync.Once
-	blockLoadDone   chan struct{}
-	addressesLoaded bool
-	// GPU!
-	gpuInfo   gpu.GPUInfo
-	generator gpu.Generator
-}
-
 func main() {
+
 	// Initialize localLog first
 	localLog = log.New(os.Stdout, "", 0)
 	var err error
@@ -78,9 +36,20 @@ func main() {
 	gpuInfo := gpu.CheckForGPU()
 
 	// Parse flags first, passing gpuInfo
-	genMode, debugMode, forceReparse, trackAll, importMode, cpuMode, gpuMode, extractMode := setupFlags(gpuInfo)
+	genMode, debugMode, forceReparse, trackAll, importMode, cpuMode, gpuMode, extractMode, profiling := setupFlags(gpuInfo)
 	constants.GeneratorMode = *genMode
 	constants.TrackAllAddresses = *trackAll
+
+	fmt.Print("\033[H\033[2J\n")
+	logger.Banner()
+
+	// Set profiling mode
+	parser.EnableProfiling = *profiling
+	if parser.EnableProfiling {
+		logger.LogStatus(localLog, constants.LogInfo,
+			"Profiling enabled - writing to cpu_profile.pprof")
+		defer pprof.StopCPUProfile()
+	}
 
 	// Set debug mode early if enabled
 	if *debugMode {
@@ -94,9 +63,6 @@ func main() {
 		*forceReparse = true // Force reparse when importing
 	}
 
-	fmt.Print("\033[H\033[2J\n")
-	logger.Banner()
-
 	// Check arguments after parsing flags
 	if len(os.Args) < 2 {
 		flag.Usage()
@@ -105,7 +71,7 @@ func main() {
 
 	// IMPORTER
 	if *importMode {
-		if err := handleImport(localLog); err != nil {
+		if err := runtime.HandleImport(localLog); err != nil {
 			logger.LogError(localLog, constants.LogError, err, "Import failed")
 			os.Exit(1)
 		}
@@ -157,7 +123,7 @@ func main() {
 
 	// If forceReparse is true, delete the existing database
 	if *forceReparse {
-		dbPath := filepath.Join(getBaseDir(), constants.AddressDBPath)
+		dbPath := filepath.Join(utils.GetBaseDir(), constants.AddressDBPath)
 		if err := os.RemoveAll(dbPath); err != nil {
 			logger.LogError(localLog, constants.LogError, err, "Failed to delete existing database")
 			logger.PrintSeparator(constants.LogError)
@@ -167,7 +133,7 @@ func main() {
 		logger.LogStatus(localLog, constants.LogDB, "Removed existing database")
 	}
 
-	ctx, generatorInstance, err := initialize(*genMode,
+	ctx, generatorInstance, err := runtime.Initialize(*genMode,
 		*debugMode, *forceReparse,
 		gpuInfo, *cpuMode, *gpuMode)
 
@@ -179,7 +145,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	defer ctx.parser.Cleanup()
+	defer ctx.Parser.Cleanup()
 
 	// Start Garbage Collection Thread
 	wg.Add(1)
@@ -189,14 +155,14 @@ func main() {
 	}()
 
 	// Load blocks - continue even if there are errors
-	if err := loadBlocks(ctx); err != nil {
+	if err := runtime.LoadBlocks(ctx); err != nil {
 		logger.LogError(localLog, constants.LogError, err,
 			"Block loading encountered errors...")
 	}
 
 	// Ensure we have loaded addresses before starting generation
-	if !ctx.addressesLoaded {
-		count, err := ctx.parser.LoadAllAddresses()
+	if !ctx.AddressesLoaded {
+		count, err := ctx.Parser.LoadAllAddresses()
 		if err != nil {
 			logger.LogError(localLog, constants.LogError, err,
 				"Failed to load addresses but continuing...")
@@ -204,7 +170,7 @@ func main() {
 			logger.LogStatus(localLog, constants.LogInfo,
 				"Loaded %s addresses (from Blockchain)",
 				utils.FormatWithCommas(int(count)))
-			ctx.addressesLoaded = true
+			ctx.AddressesLoaded = true
 		}
 	}
 
@@ -224,14 +190,14 @@ func main() {
 	logger.FirstLoad()
 
 	// Test address matching
-	if err := testAddressMatching(ctx); err != nil {
+	if err := runtime.TestAddressMatching(ctx); err != nil {
 		logger.LogError(localLog, constants.LogError, err, "Address matching test failed")
 		os.Exit(1)
 	}
 
 	// Start address generation if enabled
-	if ctx.genMode {
-		if err := startAddressGeneration(ctx); err != nil {
+	if ctx.GenMode {
+		if err := runtime.StartAddressGeneration(ctx); err != nil {
 			logger.LogError(localLog, constants.LogError, err,
 				"Address generation initialization failed")
 			os.Exit(1)
@@ -244,29 +210,28 @@ func main() {
 	// wait for finish
 	wg.Wait()
 }
-
-func runMainLoop(ctx *AppContext) {
+func runMainLoop(ctx *runtime.AppContext) {
 	newTicker := time.NewTicker(constants.ImportLogInterval)
 	defer newTicker.Stop()
 
 	// Create a function to handle cleanup
 	cleanup := func() {
-		closeOnce.Do(func() {
+		runtime.CloseOnce.Do(func() {
 			// First signal all goroutines to stop
-			close(ctx.shutdownChan)
+			close(ctx.ShutdownChan)
 
 			// Signal processing should stop
-			close(ctx.doneChan)
+			close(ctx.DoneChan)
 
 			// Wait for all goroutines to finish
-			ctx.wg.Wait()
+			ctx.Wg.Wait()
 
 			// Only then close the address channel
-			if ctx.addressChan != nil {
-				close(ctx.addressChan)
+			if ctx.AddressChan != nil {
+				close(ctx.AddressChan)
 			}
 
-			ctx.parser.Cleanup()
+			ctx.Parser.Cleanup()
 		})
 	}
 
@@ -274,65 +239,28 @@ func runMainLoop(ctx *AppContext) {
 		select {
 		case <-newTicker.C:
 			// Log block processing status only
-			logger.LogDebug(ctx.localLog, constants.LogStats,
+			logger.LogDebug(ctx.LocalLog, constants.LogStats,
 				"Blocks Processed: %d, Addresses Found: %d",
-				ctx.parser.BlocksProcessed,
-				ctx.parser.AddressesFound)
+				ctx.Parser.BlocksProcessed,
+				ctx.Parser.AddressesFound)
 
-		case <-ctx.shutdownChan:
+		case <-ctx.ShutdownChan:
 			cleanup()
-			logger.LogStatus(ctx.localLog, constants.LogWarn, "System Shutdown Complete.")
+			logger.LogStatus(ctx.LocalLog, constants.LogWarn, "System Shutdown Complete.")
 			return
 		}
 	}
 }
 
-// setupGracefulShutdown initializes graceful shutdown handling for the application.
-// It creates channels for shutdown signaling and sets up signal handling for
-// SIGTERM and SIGINT. When a shutdown signal is received, it cleans up resources
-// and exits cleanly.
-//
-// Parameters:
-//   - localLog: Logger instance for status messages
-//
-// Returns:
-//   - chan struct{}: Channel that will be closed on shutdown signal
-func setupGracefulShutdown(localLog *log.Logger,
-	shutdownChan,
-	doneChan chan struct{}) chan struct{} {
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
-
-	go func() {
-		sig := <-sigChan
-		signal.Stop(sigChan)
-		close(sigChan)
-
-		fmt.Print("\r\033[K")
-		logger.LogHeaderStatus(localLog, constants.LogWarn,
-			"Received signal %v, initiating shutdown...", sig)
-		logger.PrintSeparator(constants.LogWarn)
-
-		// Use closeOnce to ensure channels are closed only once
-		closeOnce.Do(func() {
-			close(shutdownChan)
-			close(doneChan) // Close doneChan to make goroutines exit immediately
-		})
-	}()
-
-	return shutdownChan
-}
-
 func setupFlags(gpuInfo gpu.GPUInfo) (*bool,
-	*bool, *bool, *bool, *bool, *bool, *bool, *bool) {
+	*bool, *bool, *bool, *bool, *bool, *bool, *bool, *bool) {
 	genMode := flag.Bool("gen", true, "Generate new addresses (default)")
 	debugMode := flag.Bool("debug", false, "Enable debug mode")
 	forceReparse := flag.Bool("force", false, "Force reparse of all blocks")
 	trackAll := flag.Bool("track-all", true, "Track all addresses (default)")
 	extractMode := flag.Bool("extract", false, "Extract all addresses from db")
 	importMode := flag.Bool("import", false, "Re-import all addresses")
-	profiling := flag.Bool("profile", false, "Turn on PProf (port 6060)")
+	profiling := flag.Bool("profile", false, "Enable Profiling")
 	cpuMode := flag.Bool("cpu", false, "Force CPU mode for testing")
 	gpuMode := flag.Bool("gpu", false, "Force GPU mode for testing")
 	benchMode := flag.Bool("bench", false, "Run benchmark mode")
@@ -355,14 +283,8 @@ func setupFlags(gpuInfo gpu.GPUInfo) (*bool,
 	flag.Parse()
 
 	if *benchMode {
-		benchmark()
+		runtime.Benchmark()
 		os.Exit(1)
-	}
-
-	if *profiling {
-		go func() {
-			log.Println(http.ListenAndServe("0.0.0.0:6060", nil))
-		}()
 	}
 
 	// Automatically check for GPU if neither CPU nor GPU mode is explicitly specified
@@ -375,5 +297,5 @@ func setupFlags(gpuInfo gpu.GPUInfo) (*bool,
 	}
 
 	return genMode, debugMode, forceReparse,
-		trackAll, importMode, cpuMode, gpuMode, extractMode
+		trackAll, importMode, cpuMode, gpuMode, extractMode, profiling
 }

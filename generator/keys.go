@@ -18,6 +18,20 @@ type GlobalAddressTypeStats struct {
 
 var globalStats = &Stats{} // Initialize with zero values
 
+func DecrementAddressType(addrType AddressType) {
+	constants.GlobalStats.Lock()
+	defer constants.GlobalStats.Unlock()
+
+	switch addrType {
+	case Legacy:
+		constants.GlobalStats.LegacyCount--
+	case Segwit:
+		constants.GlobalStats.SegwitCount--
+	case Native:
+		constants.GlobalStats.NativeCount--
+	}
+}
+
 // getGlobalAddressTypeStats retrieves the global statistics for Bitcoin address types.
 //
 // It uses the globalStats directly, assuming they are updated in the application

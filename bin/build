@@ -174,7 +174,7 @@ echo -e "${BLUE}🔨 Building binary...${NC}"
 if check_cuda; then
     # Build with CUDA support
     if ! CGO_ENABLED=1 NVCCFLAGS="-shared -Xcompiler -fPIC --std=c++11 -O3 -arch=sm_89 --use_fast_math -maxrregcount 64 -Xptxas -O3,-v" \
-        go build -tags "opencl,cuda" -ldflags "-r /opt/cuda/lib64" -o "$BUILD_DIR/$BINARY_NAME" .; then
+        go build -tags "opencl,cuda,profile" -ldflags "-r /opt/cuda/lib64" -o "$BUILD_DIR/$BINARY_NAME" .; then
         echo -e "${RED}❌ Build failed${NC}"
         exit 1
     fi

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -43,6 +44,27 @@ func CheckCUDA() bool {
 	return false
 }
 
+func CalculateDBSize(dbPath string) float64 {
+	files, err := os.ReadDir(dbPath)
+	if err != nil {
+		return 0
+	}
+
+	var totalSize int64
+	for _, file := range files {
+		info, err := file.Info()
+		if err != nil {
+			continue
+		}
+		// Count both .log and .ldb files
+		if strings.HasSuffix(file.Name(), ".log") ||
+			strings.HasSuffix(file.Name(), ".ldb") {
+			totalSize += info.Size()
+		}
+	}
+	return float64(totalSize) / (1024 * 1024 * 1024) // Convert to GB
+}
+
 // FileExists checks if a file exists at the given path
 func FileExists(path string) bool {
 	_, err := os.Stat(path)
@@ -73,6 +95,13 @@ func BoolToEnabledDisabled(b bool) string {
 	return "Disabled"
 }
 
+func GetBaseDir() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatal("Could not find home directory:", err)
+	}
+	return homeDir
+}
 func GetAvailableDiskSpace() (float64, float64) {
 	var stat syscall.Statfs_t
 	err := syscall.Statfs(".", &stat)

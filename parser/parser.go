@@ -7,13 +7,10 @@ import (
 	"Grendel/utils"
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"runtime"
-	"runtime/debug"
-	"strings"
+	"runtime/pprof"
 	"sync"
 	"time"
 
@@ -32,80 +29,154 @@ type Parser struct {
 	ForceReparse       bool
 	cache              map[string]bool
 	cacheMux           sync.RWMutex
-	addresses          map[string]string // Use a hash map for fast lookups
 	addressMutex       sync.RWMutex
 	BitcoinDir         string
-	processedBlocksMux sync.RWMutex // for block parser
+	processedBlocksMux sync.RWMutex
 	Stats              *constants.AddressCategory
 	processedBlocks    map[string]bool
 	LastBlockHeight    int64
 	BlocksProcessed    int64
 	AddressesFound     int64
 	lastUpdateTime     time.Time
+	addresses          map[uint64]uint64 // hash -> balance
 }
 
-func (p *Parser) CheckAddressBatch(addresses []string,
-	results []bool,
-	balances []int64) {
+var (
+	EnableProfiling = false   // Global control for profiling
+	profileOnce     sync.Once // Ensure we only create one profile
+)
 
-	p.addressMutex.RLock()
-	// First pass: check in-memory cache
-	for i, addr := range addresses {
-		if value, exists := p.addresses[addr]; exists {
-			results[i] = true
-			balances[i] = int64(binary.LittleEndian.Uint64([]byte(value)))
-		}
+func fastHash(s string) uint64 {
+	// Use FNV-1a hash for better performance
+	const fnvPrime = 1099511628211
+	const fnvOffset = 14695981039346656037
+
+	hash := uint64(fnvOffset)
+	for i := 0; i < len(s); i++ {
+		hash ^= uint64(s[i])
+		hash *= fnvPrime
 	}
-	p.addressMutex.RUnlock()
+	return hash
+}
 
-	// Second pass: check database for missing addresses
+func (p *Parser) CheckAddressBatch(addresses []string, results []bool, balances []int64) {
+	var totalTime, lockTime, lookupTime time.Duration
+	var lookupCount, hitCount int
+
+	if EnableProfiling {
+		profileOnce.Do(func() {
+			f, err := os.Create("cpu_profile.pprof")
+			if err != nil {
+				log.Fatal(err)
+			}
+			if err := pprof.StartCPUProfile(f); err != nil {
+				log.Fatal(err)
+			}
+		})
+	}
+
+	start := time.Now()
+	lockStart := time.Now()
+	p.addressMutex.RLock()
+	lockTime = time.Since(lockStart)
+
+	// Pre-allocate hash slice
+	hashes := make([]uint64, len(addresses))
+
+	lookupStart := time.Now()
+
+	// Calculate all hashes first for better cache locality
 	for i, addr := range addresses {
-		if !results[i] {
-			key := []byte("addr:" + addr)
-			value, err := p.DB.Get(key, nil)
-			if err == nil {
-				results[i] = true
-				balances[i] = int64(binary.LittleEndian.Uint64(value))
+		hashes[i] = fastHash(addr)
+	}
 
-				// Add to memory cache
-				p.addressMutex.Lock()
-				p.addresses[addr] = string(value)
-				p.addressMutex.Unlock()
+	// Process in chunks for better cache utilization
+	const chunkSize = 1024
+	for i := 0; i < len(addresses); i += chunkSize {
+		end := i + chunkSize
+		if end > len(addresses) {
+			end = len(addresses)
+		}
+
+		// Check chunk of addresses
+		for j := i; j < end; j++ {
+			if EnableProfiling {
+				lookupCount++
+			}
+
+			if balance, exists := p.addresses[hashes[j]]; exists {
+				if EnableProfiling {
+					hitCount++
+				}
+				results[j] = true
+				balances[j] = int64(balance)
 			}
 		}
 	}
+
+	p.addressMutex.RUnlock()
+
+	if EnableProfiling {
+		lookupTime = time.Since(lookupStart)
+		totalTime = time.Since(start)
+		p.Logger.Printf("CheckAddressBatch Profile:\n"+
+			"Total Time: %v\n"+
+			"Lock Time: %v\n"+
+			"Lookup Time: %v\n"+
+			"Lookups: %d\n"+
+			"Hits: %d\n"+
+			"Avg Time per Lookup: %v\n"+
+			"Memory Map Size: %d\n",
+			totalTime,
+			lockTime,
+			lookupTime,
+			lookupCount,
+			hitCount,
+			lookupTime/time.Duration(lookupCount),
+			len(p.addresses))
+	}
 }
 
-func calculateDBSize(dbPath string) float64 {
-	files, err := os.ReadDir(dbPath)
-	if err != nil {
-		return 0
+func (p *Parser) LoadAllAddresses() (uint64, error) {
+	iter := p.DB.NewIterator(nil, nil)
+	defer iter.Release()
+
+	// Pre-allocate main map
+	p.addresses = make(map[uint64]uint64, p.AddressCount)
+
+	prefix := []byte("addr:")
+	count := uint64(0)
+
+	for iter.Next() {
+		key := iter.Key()
+		if len(key) > 5 && bytes.Equal(key[:5], prefix) {
+			addr := string(key[5:])
+			balance := binary.LittleEndian.Uint64(iter.Value())
+
+			// Store with hashed key
+			hash := fastHash(addr)
+			p.addresses[hash] = balance
+			count++
+		}
 	}
 
-	var totalSize int64
-	for _, file := range files {
-		info, err := file.Info()
-		if err != nil {
-			continue
-		}
-		// Count both .log and .ldb files
-		if strings.HasSuffix(file.Name(), ".log") ||
-			strings.HasSuffix(file.Name(), ".ldb") {
-			totalSize += info.Size()
-		}
-	}
-	return float64(totalSize) / (1024 * 1024 * 1024) // Convert to GB
+	return count, nil
 }
 
+// Update AddTestAddress
 func (p *Parser) AddTestAddress(addr string) error {
 	p.addressMutex.Lock()
 	defer p.addressMutex.Unlock()
 
-	// Use a small test balance (0.0001 BTC in satoshis)
-	testBalance := []byte{10, 0, 0, 0, 0, 0, 0, 0} // 10 satoshis
+	testBalance := uint64(10)
+	balanceBytes := make([]byte, 8)
+	binary.LittleEndian.PutUint64(balanceBytes, testBalance)
 
-	p.addresses[addr] = string(testBalance)
-	if err := p.DB.Put([]byte("addr:"+addr), testBalance, nil); err != nil {
+	// Add to main map with hash
+	hash := fastHash(addr)
+	p.addresses[hash] = testBalance
+
+	if err := p.DB.Put([]byte("addr:"+addr), balanceBytes, nil); err != nil {
 		return err
 	}
 
@@ -114,23 +185,50 @@ func (p *Parser) AddTestAddress(addr string) error {
 	return nil
 }
 
-// Lazy address loading (for speed) 20250123
-func (p *Parser) LazyLoadAddresses() error {
-	// Only load address statistics initially
-	statsIter := p.DB.NewIterator(nil, nil)
-	defer statsIter.Release()
+func (p *Parser) GetAddresses() []string {
+	p.addressMutex.RLock()
+	addresses := make([]string, 0, len(p.addresses))
+	// Just return the hashed keys since that's what we use for matching
+	for hash := range p.addresses {
+		addresses = append(addresses, fmt.Sprintf("%x", hash))
+	}
+	p.addressMutex.RUnlock()
+	return addresses
+}
 
-	for statsIter.Next() {
-		key := statsIter.Key()
-		if len(key) > 5 && string(key[:5]) == "addr:" {
+// -------------------------------------------------------------
+
+func (p *Parser) ResetProcessedBlocks() error {
+	p.processedBlocksMux.Lock()
+	p.processedBlocks = make(map[string]bool, constants.InitialProcessedBlocksCapacity)
+	p.processedBlocksMux.Unlock()
+	return nil
+}
+
+func (p *Parser) loadStats() error {
+	iter := p.DB.NewIterator(nil, nil)
+	defer iter.Release()
+
+	prefix := []byte("addr:")
+	for iter.Next() {
+		key := iter.Key()
+		if bytes.HasPrefix(key, prefix) {
 			addr := string(key[5:])
 			addresses.CategorizeAddress(addr, p.Stats)
-			p.AddressCount++
 		}
 	}
 
-	// Don't load actual addresses into memory yet
-	return nil
+	// Update global stats
+	constants.GlobalStats.Lock()
+	constants.GlobalStats.LegacyCount = int64(p.Stats.LegacyCount)
+	constants.GlobalStats.SegwitCount = int64(p.Stats.SegwitCount)
+	constants.GlobalStats.NativeCount = int64(p.Stats.NativeCount)
+	constants.GlobalStats.TotalCount = constants.GlobalStats.LegacyCount +
+		constants.GlobalStats.SegwitCount +
+		constants.GlobalStats.NativeCount
+	constants.GlobalStats.Unlock()
+
+	return iter.Error()
 }
 
 // ------------------------------------------------------------------
@@ -139,8 +237,7 @@ func NewParser(localLog *log.Logger,
 	dbPath string,
 	forceReparse bool) (*Parser, error) {
 
-	// Get database size and estimate load time
-	sizeGB := calculateDBSize(dbPath)
+	sizeGB := utils.CalculateDBSize(dbPath)
 	var action string
 	if forceReparse || sizeGB == 0 {
 		action = "Creating"
@@ -153,17 +250,17 @@ func NewParser(localLog *log.Logger,
 			"%s Addresses: %.2fGB", action, sizeGB)
 	}
 
-	// Use more conservative database options
+	// Optimize database options based on available memory
 	opts := &opt.Options{
-		BlockCacheCapacity:     64 * 1024 * 1024, // Reduced to 64MB
-		WriteBuffer:            32 * 1024 * 1024, // Reduced to 32MB
-		CompactionTableSize:    16 * 1024 * 1024, // Reduced to 16MB
-		OpenFilesCacheCapacity: 500,
-		Filter:                 filter.NewBloomFilter(10),
-		BlockRestartInterval:   8,
-		BlockSize:              16 * 1024,
-		WriteL0SlowdownTrigger: 8,
-		WriteL0PauseTrigger:    24,
+		BlockCacheCapacity:     constants.MinBufferSize,     // Base block cache
+		WriteBuffer:            constants.MinBufferSize / 2, // Smaller write buffer
+		CompactionTableSize:    constants.MinBufferSize / 4, // Conservative compaction
+		OpenFilesCacheCapacity: 1000,                        // Increased from 500
+		Filter:                 filter.NewBloomFilter(10),   // Keep bloom filter
+		BlockRestartInterval:   16,                          // Increased from 8
+		BlockSize:              32 * 1024,                   // Increased block size
+		WriteL0SlowdownTrigger: 16,                          // Doubled
+		WriteL0PauseTrigger:    48,                          // Doubled
 	}
 
 	p := &Parser{
@@ -172,12 +269,9 @@ func NewParser(localLog *log.Logger,
 		DBPath:          dbPath,
 		ForceReparse:    forceReparse,
 		processedBlocks: make(map[string]bool, constants.InitialProcessedBlocksCapacity),
-		// Start with smaller initial capacity
-		addresses:       make(map[string]string, 100000),
+		addresses:       make(map[uint64]uint64, constants.InitialAddressesCapacity),
 		cache:           make(map[string]bool, constants.InitialCacheCapacity),
 		Stats:           &constants.AddressCategory{},
-		BlocksProcessed: 0,
-		AddressesFound:  0,
 	}
 
 	startTime := time.Now()
@@ -193,11 +287,12 @@ func NewParser(localLog *log.Logger,
 
 	if forceReparse {
 		if err := p.ResetProcessedBlocks(); err != nil {
-			logger.LogError(localLog, constants.LogError, err, "Failed to reset processed blocks")
+			logger.LogError(localLog, constants.LogError, err,
+				"Failed to reset processed blocks")
 		}
 	}
 
-	// Instead of loading all addresses, just count them and update stats
+	// Count addresses and update stats without full load
 	if count, err := p.CountAddresses(); err != nil {
 		return nil, fmt.Errorf("failed to count addresses: %v", err)
 	} else {
@@ -211,7 +306,7 @@ func NewParser(localLog *log.Logger,
 		p.AddressCount = count
 	}
 
-	// Update global stats
+	// Update global stats atomically
 	constants.GlobalStats.Lock()
 	constants.GlobalStats.LegacyCount = int64(p.Stats.LegacyCount)
 	constants.GlobalStats.SegwitCount = int64(p.Stats.SegwitCount)
@@ -265,297 +360,15 @@ func (p *Parser) CountAddresses() (uint64, error) {
 
 func (p *Parser) CheckAddress(address string) (bool, int64) {
 	p.addressMutex.RLock()
-	value, exists := p.addresses[address]
+	hash := fastHash(address)
+	balance, exists := p.addresses[hash]
 	p.addressMutex.RUnlock()
 
 	if !exists {
 		return false, 0
 	}
 
-	return true, int64(binary.LittleEndian.Uint64([]byte(value)))
-}
-
-func (p *Parser) working_CheckAddress(address string) (bool, int64) {
-	start := time.Now()
-
-	p.addressMutex.RLock()
-	// Check memory first
-	if value, exists := p.addresses[address]; exists {
-		p.addressMutex.RUnlock()
-		memTime := time.Since(start)
-		if constants.DebugMode {
-			fmt.Printf("Memory lookup took: %v\n", memTime)
-		}
-		return true, int64(binary.LittleEndian.Uint64([]byte(value)))
-	}
-	p.addressMutex.RUnlock()
-
-	// If not in memory, check database
-	dbStart := time.Now()
-	key := []byte("addr:" + address)
-	value, err := p.DB.Get(key, nil)
-	dbTime := time.Since(dbStart)
-	if constants.DebugMode {
-		fmt.Printf("DB lookup took: %v\n", dbTime)
-	}
-
-	if err != nil {
-		return false, 0
-	}
-
-	// Add to memory cache
-	cacheStart := time.Now()
-	p.addressMutex.Lock()
-	p.addresses[address] = string(value)
-	p.addressMutex.Unlock()
-	cacheTime := time.Since(cacheStart)
-	if constants.DebugMode {
-		fmt.Printf("Cache update took: %v\n", cacheTime)
-	}
-
-	totalTime := time.Since(start)
-	if constants.DebugMode {
-		fmt.Printf("Total check took: %v\n", totalTime)
-	}
-
-	return true, int64(binary.LittleEndian.Uint64(value))
-}
-
-// Modified CheckAddress to load addresses on demand
-func (p *Parser) _CheckAddress(address string) (bool, int64) {
-	p.addressMutex.RLock()
-
-	// Check memory first
-	if value, exists := p.addresses[address]; exists {
-		p.addressMutex.RUnlock()
-		return true, int64(binary.LittleEndian.Uint64([]byte(value)))
-	}
-	p.addressMutex.RUnlock()
-
-	// If not in memory, check database
-	key := []byte("addr:" + address)
-	value, err := p.DB.Get(key, nil)
-	if err != nil {
-		return false, 0
-	}
-
-	// Add to memory cache
-	p.addressMutex.Lock()
-	p.addresses[address] = string(value)
-	p.addressMutex.Unlock()
-
-	return true, int64(binary.LittleEndian.Uint64(value))
-}
-
-// ---------------------------------------------
-
-func (p *Parser) LoadBlocksProcessed() error {
-	key := []byte("blocks_processed")
-	value, err := p.DB.Get(key, nil)
-	if err == leveldb.ErrNotFound {
-		p.BlocksProcessed = 0
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	p.BlocksProcessed = int64(binary.LittleEndian.Uint64(value))
-	return nil
-}
-
-func (p *Parser) SaveBlocksProcessed() error {
-	key := []byte("blocks_processed")
-	value := make([]byte, 8)
-	binary.LittleEndian.PutUint64(value, uint64(p.BlocksProcessed))
-	return p.DB.Put(key, value, nil)
-}
-
-func (p *Parser) IsBlockProcessed(blockFile string) bool {
-	// Always check ForceReparse first
-	if p.ForceReparse {
-		if constants.DebugMode {
-			p.Logger.Printf("[🔍 DEBUG] Force reparse enabled, treating block %s as unprocessed",
-				blockFile)
-		}
-		return false
-	}
-
-	p.processedBlocksMux.RLock()
-	defer p.processedBlocksMux.RUnlock()
-
-	// Check memory cache first
-	if processed, exists := p.processedBlocks[blockFile]; exists {
-		return processed && !p.ForceReparse // Add ForceReparse check here too
-	}
-
-	// Then check database
-	key := append([]byte("block:"), blockFile...)
-	exists, err := p.DB.Has(key, nil)
-	if err != nil {
-		p.Logger.Printf("[❌ ERROR] Error checking block status: %v", err)
-		return false
-	}
-
-	// Cache the result, but respect ForceReparse
-	if exists && !p.ForceReparse {
-		p.processedBlocks[blockFile] = true
-	} else {
-		p.processedBlocks[blockFile] = false
-	}
-
-	return exists && !p.ForceReparse
-}
-
-func (p *Parser) MarkBlockProcessed(blockFile string) error {
-	p.processedBlocksMux.Lock()
-	defer p.processedBlocksMux.Unlock()
-
-	if constants.DebugMode {
-		p.Logger.Printf("%s Marking block %s as processed",
-			constants.LogDebug, blockFile)
-	}
-
-	// Mark in memory
-	p.processedBlocks[blockFile] = true
-
-	// Mark in database
-	key := append([]byte("block:"), blockFile...)
-	if err := p.DB.Put(key, []byte{1}, nil); err != nil {
-		return fmt.Errorf("failed to mark block as processed: %v", err)
-	}
-
-	return nil
-}
-
-func (p *Parser) saveProgress() error {
-	// Save current block height
-	heightBytes := make([]byte, 8)
-	binary.LittleEndian.PutUint64(heightBytes, uint64(p.BlockHeight))
-	if err := p.DB.Put([]byte("height"), heightBytes, nil); err != nil {
-		return fmt.Errorf("failed to save height: %v", err)
-	}
-	return nil
-}
-
-// Add cleanup method for interrupted scans
-func (p *Parser) Cleanup() error {
-	if p == nil {
-		return nil
-	}
-
-	// Save current progress
-	if err := p.saveProgress(); err != nil {
-		p.Logger.Printf("%s Failed to save progress during cleanup: %v", constants.LogError, err)
-	}
-
-	// Force garbage collection
-	runtime.GC()
-	debug.FreeOSMemory()
-
-	return nil
-}
-
-func (p *Parser) ResetProcessedBlocks() error {
-	if !p.ForceReparse {
-		return nil
-	}
-
-	p.processedBlocksMux.Lock()
-	defer p.processedBlocksMux.Unlock()
-
-	// Clear memory cache
-	p.processedBlocks = make(map[string]bool, constants.InitialProcessedBlocksCapacity)
-
-	// Clear database entries
-	iter := p.DB.NewIterator(nil, nil)
-	defer iter.Release()
-
-	batch := new(leveldb.Batch)
-	for iter.Next() {
-		key := iter.Key()
-		if len(key) > 6 && string(key[:6]) == "block:" {
-			batch.Delete(key)
-		}
-	}
-
-	if err := p.DB.Write(batch, nil); err != nil {
-		return fmt.Errorf("failed to clear processed blocks: %v", err)
-	}
-
-	p.BlocksProcessed = 0
-	return p.SaveBlocksProcessed()
-}
-
-func (p *Parser) loadStats() error {
-	// Load stats from database
-	statsKey := []byte("address_stats")
-	data, err := p.DB.Get(statsKey, nil)
-	if err == leveldb.ErrNotFound {
-		return nil // No stats saved yet
-	}
-	if err != nil {
-		return err
-	}
-
-	// Update global stats after loading
-	constants.UpdateAddressStats(p.Stats)
-	return json.Unmarshal(data, p.Stats)
-}
-
-func (p *Parser) LoadAllAddresses() (uint64, error) {
-	iter := p.DB.NewIterator(nil, nil)
-	defer iter.Release()
-
-	// Pre-allocate map with a good size estimate
-	p.addresses = make(map[string]string, p.AddressCount)
-
-	// Prepare the prefix once
-	prefix := []byte("addr:")
-	count := uint64(0)
-
-	// Local counters to avoid locks
-	var legacy, segwit, native int
-
-	// Batch processing
-	for iter.Next() {
-		key := iter.Key()
-		if len(key) > 5 && bytes.Equal(key[:5], prefix) {
-			// Direct slice to string conversion for key
-			addr := string(key[5:])
-
-			// Quick categorization without regex
-			switch {
-			case strings.HasPrefix(addr, "1"):
-				legacy++
-			case strings.HasPrefix(addr, "3"):
-				segwit++
-			case strings.HasPrefix(addr, "bc1"):
-				native++
-			}
-
-			// Store value directly without conversion
-			p.addresses[addr] = string(iter.Value())
-			count++
-		}
-	}
-
-	// Update stats once at the end
-	p.Stats.LegacyCount = legacy
-	p.Stats.SegwitCount = segwit
-	p.Stats.NativeCount = native
-
-	// Single lock for global stats update
-	constants.GlobalStats.Lock()
-	constants.GlobalStats.LegacyCount = int64(legacy)
-	constants.GlobalStats.SegwitCount = int64(segwit)
-	constants.GlobalStats.NativeCount = int64(native)
-	constants.GlobalStats.TotalCount = constants.GlobalStats.LegacyCount +
-		constants.GlobalStats.SegwitCount +
-		constants.GlobalStats.NativeCount
-	constants.GlobalStats.Unlock()
-
-	p.AddressCount = count
-	return count, nil
+	return true, int64(balance)
 }
 
 // Address load verification
@@ -580,13 +393,39 @@ func (p *Parser) VerifyStats() {
 	}
 }
 
-// Optimizations
+// ----------------- OVERRIDES ------------------------------
 //
-// GetAddresses returns a slice of all stored addresses
-func (p *Parser) GetAddresses() []string {
-	addresses := make([]string, 0, len(p.addresses))
-	for addr := range p.addresses {
-		addresses = append(addresses, addr)
+// Add these methods to parser/parser.go
+
+func (p *Parser) Cleanup() {
+	if p.DB != nil {
+		p.DB.Close()
 	}
-	return addresses
+}
+
+func (p *Parser) IsBlockProcessed(blockFile string) bool {
+	p.processedBlocksMux.RLock()
+	defer p.processedBlocksMux.RUnlock()
+	return p.processedBlocks[blockFile]
+}
+
+func (p *Parser) MarkBlockProcessed(blockFile string) {
+	p.processedBlocksMux.Lock()
+	p.processedBlocks[blockFile] = true
+	p.processedBlocksMux.Unlock()
+}
+
+func (p *Parser) LoadBlocksProcessed() error {
+	iter := p.DB.NewIterator(nil, nil)
+	defer iter.Release()
+
+	prefix := []byte("block:")
+	for iter.Next() {
+		key := iter.Key()
+		if bytes.HasPrefix(key, prefix) {
+			blockFile := string(key[6:])
+			p.processedBlocks[blockFile] = true
+		}
+	}
+	return iter.Error()
 }

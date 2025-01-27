@@ -17,16 +17,74 @@ Key features include:
 - Periodic loading of new Bitcoin blocks during runtime.
 - Logging of found addresses with their seeds, private keys, and balances.
 
+### Errata
+
+Yes, I am aware the code is extensive and needs to be cleaned up. Feel free to fork, contribute, or offer suggestions. There are some functions that are too complicated and some functions that can be removed, as they are no longer used.
+
+The current speed of ~1.8MM generated addresses per second (including full address matching) on an RTX 4090 is impressive, but I do believe we can improve this speed. Open Source ftw.
+
 ## Getting Started
 
 If you want to short-circuit all the compilation and everything else, here's the latest binary for Linux. It will not (and should not) run on Windoze.
 
-### Download Binary
+### Example Startup & Loading
+
+The system provides comprehensive and detailed logs of each stage, including address generation, matching, and dropped or found addresses.
+
+```bash
+[🔍 -INFO] ─────────────────────────────────────────────────────────────────
+[🔍 -INFO] Generator: Enabled Track All: Enabled
+[🔍 -INFO] Reparse: Disabled GPU Mode: Enabled
+[🔍 -INFO] DebugMode: Disabled CPU Mode: Disabled
+[🎮 -GPU-] ─────────────────────────────────────────────────────────────────
+[🎮 -GPU-] CPU vs GPU Benchmark (5,000,000 addresses)
+[🎮 -GPU-] ─────────────────────────────────────────────────────────────────
+[🎮 -GPU-] CPU: 16.381225411s (305,227 keys/sec)
+[🎮 -GPU-] GPU: 701.274596ms (7,129,874 keys/sec)
+[🎮 -GPU-] Speedup: 23.36x
+[🎮 -GPU-] ─────────────────────────────────────────────────────────────────
+[🎮 -GPU-] System has 256 Cores and 503.6 GB RAM
+[🎮 -GPU-] NVIDIA GeForce RTX 4090 23GB VRAM (CUDA Enabled)
+[🎮 -GPU-] ─────────────────────────────────────────────────────────────────
+[🔍  INFO] Loading Addresses: 2.34GB
+[🔍  INFO] Total Addresses:   55,006,296 (151.6 seconds)
+[📁 -DATA] ─────────────────────────────────────────────────────────────────
+[📁 -DATA] Starting the Block Loader...
+[📁 -DATA] ─────────────────────────────────────────────────────────────────
+[📁 -DATA] Block loader successfully started.
+[🔍  INFO] ─────────────────────────────────────────────────────────────────
+[🔍  INFO] Checked 5,000,000 addresses in 8.783 seconds
+[🔍  INFO] Matching rate: 569,277 addresses/second
+[🧠 -MEM-] ─────────────────────────────────────────────────────────────────
+[🧠 -MEM-] CPU Cores:  256 Disk:   120.0GB Free:    91.4GB
+[🧠 -MEM-] Total:  503.6GB Avail:  336.0GB Write:  512.0GB
+[🧠 -MEM-] Block:  334.9GB Write:   95.7GB Comp:    47.8GB
+[🧠 -MEM-] Batch:     500k Chan:     1000k RNG:      1048k
+[〰️ HEADR] ─────────────────────────────────────────────────────────────────
+[📝 STATS] Total Addresses:  54,526,722
+[📝 STATS]      Legacy (1):  18,980,348
+[📝 STATS]      SegWit (3):  18,213,445
+[📝 STATS]    Native (bc1):  17,332,929
+[📝 STATS] ─────────────────────────────────────────────────────────────────
+[🔍  INFO] Starting generator in GPU Enabled mode
+[🔍  INFO] Worker Pool - 512 (workers) 8,388,608 (buffer)
+[〰️ HEADR] ─────────────────────────────────────────────────────────────────
+[〰️ HEADR]  GENERATED |  RATE/s | LEGACY  |  SEGWIT |  NATIVE |  RAM  | DROP
+[〰️ HEADR] ─────────────────────────────────────────────────────────────────
+[16:00:59]       107M | 1785.8k | 16.803M | 16.809M | 17.388M | 14.2G | 0
+[16:01:59]       211M | 1732.5k | 17.131M | 17.139M | 17.729M | 11.9G | 0
+[16:02:59]       314M | 1720.3k | 16.965M | 16.975M | 17.560M | 10.6G | 0
+[16:03:59]       431M | 1948.1k | 19.272M | 19.282M | 19.946M | 11.5G | 0
+```
+
+- Note the efficient use of RAM, the different address types being generated and matched, the lack of dropped addresses being matched, and the consistency of the number of generated and matched addresses -- about ~1.7MM per second, and even more as the system ramps up and the cache becomes stable.
+
+### Download Binary (Coming Soon)
 
 1. **Download the Pre-compiled Binary:**
 
     ```bash
-    wget [BINARY_LINK_HERE] -O grendel
+    wget [COMING SOON] -O grendel
     ```
 
 2. **Make it Executable and Move to System Path:**
@@ -48,24 +106,33 @@ If you want to short-circuit all the compilation and everything else, here's the
 
 > **Note:** The binary is compiled for x86_64 Linux systems. For other architectures, please build from source.
 
-### Typical Loading Screen
+### Command Line Options
 
-[🎮 -GPU-] ───────────────────────────────────────────────────────────
-[🎮 -GPU-] CPU vs GPU Benchmark (5,000,000 addresses)
-[🎮 -GPU-] ───────────────────────────────────────────────────────────
-[🎮 -GPU-] CPU: 16.834972167s (297,000 keys/sec)
-[🎮 -GPU-] GPU: 651.62487ms (7,673,126 keys/sec)
-[🎮 -GPU-] Speedup: 25.84x
-[🎮 -GPU-] ───────────────────────────────────────────────────────────
-[🔍 -INFO] Loading Addresses: 2.34GB
-[🔍 -INFO] Total Addresses: 55,006,296 (67.6 seconds)
-[📁 -DATA] ───────────────────────────────────────────────────────────
-[📁 -DATA] Loading addresses into memory...
-[🧠 -MEM-] Loaded 55,006,296 addresses in 35.195 seconds
+```bash
+[⌛️ START] ────────────────────────────────────────────────────────
+[⌛️ START] ₿ Grendel Commands:
+[⌛️ START] --debug     : Enable Debug Mode
+[⌛️ START] --gen       : Generate Addresses (true by default)
+[⌛️ START] --import    : Re-import all addresses
+[⌛️ START] --track-all : Track all addresses (uses more memory)
+[⌛️ START] --cpu       : Force CPU mode for testing
+[⌛️ START] --gpu       : Force GPU mode for testing
+[⌛️ START] --bench     : Run Benchmark and exit
+[⌛️ START] ───────────────────────────────────────────────────────
+```
+
+#### Profiling
+
+If running with `--profile` enabled (not shown in the list), the binary will create a `cpu_profile.pprof` and `/gpu_profile.pprof` file, which can be checked with go's pprof profiling.
+
+Example:
+`go tool pprof cpu_profile.pprof `
+
+Typically, `top 10` is the best place to start.
 
 ### Prerequisites
 
-- A Linux-based operating system (e.g., Debian)
+- A Linux-based operating system (e.g., Debian, Arch, Ubuntu)
 - Bitcoin Core installed and synced (see Installation below)
 
 ### Installation

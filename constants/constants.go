@@ -46,13 +46,13 @@ var (
 
 // Specific to threads, memory management and processing
 var (
-	NumWorkers              = runtime.NumCPU() * 4 // 4x CPU
+	NumWorkers              = runtime.NumCPU() * 2 // 4x CPU
 	RNGPoolSize             = 1024 * 1024          // 250_000
-	ChannelBuffer           = 4 * 1024 * 1024      // 40_000
+	ChannelBuffer           = 8 * 1024 * 1024      // 40_000
 	MaxBlockFiles           = 1_000_000            // 1_000_000
 	ImportBatchSize         = 500_000              // 500_000
-	ImportLogInterval       = 30 * time.Second     // Every 90 seconds
-	AddressCheckerBatchSize = 100_000              // new AddressCheckerBatchSize
+	ImportLogInterval       = 60 * time.Second     // Every 90 seconds
+	AddressCheckerBatchSize = 500_000              // new AddressCheckerBatchSize
 )
 
 // Initial map capacities based on typical Bitcoin node data
@@ -73,9 +73,8 @@ type Config struct {
 
 // File paths
 const (
-	AddressDBPath      = ".bitcoin/addresses.db"
-	BitcoinDir         = ".bitcoin"
-	KnownAddressesPath = ".bitcoin/addresses.txt"
+	AddressDBPath = ".bitcoin/addresses.db"
+	BitcoinDir    = ".bitcoin"
 )
 
 // Categories
@@ -150,8 +149,9 @@ var (
 	}
 )
 
-// Helper function
+// Helper functions
 //
+
 // Add helper functions to update stats
 // Helper functions to update stats
 func UpdateAddressStats(stats *AddressCategory) {

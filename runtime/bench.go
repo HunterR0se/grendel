@@ -1,4 +1,4 @@
-package main
+package runtime
 
 import (
 	"Grendel/constants"
@@ -17,7 +17,7 @@ import (
 	"golang.org/x/exp/rand"
 )
 
-func benchmark() {
+func Benchmark() {
 	count := flag.Int("n", constants.GPUTestAddresses, "Number of keys to generate")
 	flag.Parse()
 
@@ -42,7 +42,7 @@ func benchmark() {
 	}
 
 	// Open the real address database
-	dbPath := filepath.Join(getBaseDir(), constants.AddressDBPath)
+	dbPath := filepath.Join(utils.GetBaseDir(), constants.AddressDBPath)
 	p, err := parser.NewParser(localLog, "", dbPath, false) // Note: false to not reparse
 	if err != nil {
 		logger.LogError(localLog, constants.LogError, err, "Failed to open address database")

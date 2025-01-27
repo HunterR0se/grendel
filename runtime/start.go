@@ -1,4 +1,4 @@
-package main
+package runtime
 
 import (
 	"Grendel/constants"
@@ -36,12 +36,18 @@ func setupWorkerPool(ctx *AppContext) *workerPool {
 		go pool.startWorker(ctx)
 	}
 
-	logger.LogStatus(ctx.localLog, constants.LogInfo,
+	logger.LogStatus(ctx.LocalLog, constants.LogInfo,
 		"Worker Pool - %d (workers) %s (buffer)",
 		numWorkers,
 		utils.FormatWithCommas(constants.ChannelBuffer))
 
 	return pool
+}
+
+var addressBatchPool = sync.Pool{
+	New: func() interface{} {
+		return make([]string, 0, constants.AddressCheckerBatchSize)
+	},
 }
 
 func (p *workerPool) startWorker(ctx *AppContext) {
@@ -54,44 +60,43 @@ func (p *workerPool) startWorker(ctx *AppContext) {
 		batch = append(batch, addr)
 		addresses = append(addresses, addr.Address)
 
-		// Process when batch reaches 75% capacity or is full
-		if len(batch) >= cap(batch)*3/4 {
+		// Process when batch is full
+		if len(batch) >= constants.AddressCheckerBatchSize {
 			p.processAddressBatch(ctx, batch, addresses)
 			batch = batch[:0]
 			addresses = addresses[:0]
 		}
 	}
 
+	// Process any remaining addresses
 	if len(batch) > 0 {
 		p.processAddressBatch(ctx, batch, addresses)
 	}
 }
 
 func (p *workerPool) processAddressBatch(ctx *AppContext, batch []*WalletInfo, addresses []string) {
-	// Pre-allocate slices at full capacity
+	// Pre-allocate all slices at once
 	results := make([]bool, len(addresses))
 	balances := make([]int64, len(addresses))
 
-	// Single bulk check for the entire batch
-	ctx.parser.CheckAddressBatch(addresses, results, balances)
+	// Single batch check
+	ctx.Parser.CheckAddressBatch(addresses, results, balances)
 
-	// Process results in single pass without allocations
+	// Process results in single pass
 	for i := range results {
 		if results[i] {
 			constants.IncrementFound()
 			wallet := batch[i]
 
-			logger.LogStatus(ctx.localLog, constants.LogCheck,
-				"🎯 FOUND ADDRESS: %s", addresses[i])
-			logger.LogStatus(ctx.localLog, constants.LogCheck,
-				"💰 Balance: %d Satoshi", balances[i])
-			logger.LogStatus(ctx.localLog, constants.LogCheck,
-				"🔑 Private Key: %x", wallet.PrivateKey.Serialize())
+			// Log found address details
+			logger.LogStatus(ctx.LocalLog, constants.LogCheck,
+				"🎯 FOUND: %s Balance: %.8f BTC Key: %x",
+				addresses[i],
+				float64(balances[i])/100000000,
+				wallet.PrivateKey.Serialize())
 
-			if err := utils.WriteFound(addresses[i], balances[i]); err != nil {
-				logger.LogError(ctx.localLog, constants.LogError, err,
-					"Failed to write found address")
-			}
+			// Write to file asynchronously
+			go utils.WriteFound(addresses[i], balances[i])
 		}
 	}
 }
@@ -112,8 +117,8 @@ func newCheckerState() *checkerState {
 }
 
 func runAddressChecker(ctx *AppContext) {
-	logger.LogStatus(ctx.localLog, constants.LogInfo, "Block Status logger Started")
-	defer logger.LogDebug(ctx.localLog, constants.LogInfo, "Stats logger stopped")
+	logger.LogStatus(ctx.LocalLog, constants.LogInfo, "Block Status logger Started")
+	defer logger.LogDebug(ctx.LocalLog, constants.LogInfo, "Stats logger stopped")
 
 	state := newCheckerState()
 	defer state.ticker.Stop()
@@ -123,7 +128,7 @@ func runAddressChecker(ctx *AppContext) {
 
 	for {
 		select {
-		case <-ctx.shutdownChan:
+		case <-ctx.ShutdownChan:
 			return
 		case <-state.ticker.C:
 			logProgress(ctx, state)
@@ -137,7 +142,7 @@ func logProgress(ctx *AppContext, state *checkerState) {
 	elapsed := time.Since(state.startTime)
 	rate := float64(state.checksCompleted) / elapsed.Seconds()
 
-	logger.LogDebug(ctx.localLog, constants.LogInfo,
+	logger.LogDebug(ctx.LocalLog, constants.LogInfo,
 		"Checker Status: %s checks/sec, Total: %s",
 		utils.FormatWithCommas(int(rate)),
 		utils.FormatWithCommas(state.checksCompleted))
@@ -148,7 +153,7 @@ func processBatch(ctx *AppContext, state *checkerState, workers *workerPool) {
 
 	if filledCount == 0 {
 		select {
-		case <-ctx.shutdownChan:
+		case <-ctx.ShutdownChan:
 			return
 		case state.readyForMore <- struct{}{}:
 		default:
@@ -159,7 +164,7 @@ func processBatch(ctx *AppContext, state *checkerState, workers *workerPool) {
 	// Process entire batch at once
 	for _, addr := range state.addresses {
 		select {
-		case <-ctx.shutdownChan:
+		case <-ctx.ShutdownChan:
 			return
 		case workers.workChan <- addr:
 		default:
@@ -170,7 +175,7 @@ func processBatch(ctx *AppContext, state *checkerState, workers *workerPool) {
 
 	// Signal ready for more immediately
 	select {
-	case <-ctx.shutdownChan:
+	case <-ctx.ShutdownChan:
 	case state.readyForMore <- struct{}{}:
 	default:
 	}
@@ -179,7 +184,7 @@ func processBatch(ctx *AppContext, state *checkerState, workers *workerPool) {
 
 	if time.Since(state.lastProgressTime) >= 5*time.Second {
 		batchRate := float64(filledCount) / time.Since(state.lastProgressTime).Seconds()
-		logger.LogDebug(ctx.localLog, constants.LogCheck,
+		logger.LogDebug(ctx.LocalLog, constants.LogCheck,
 			"Batch complete: %s addresses at %s/sec",
 			utils.FormatWithCommas(filledCount),
 			utils.FormatWithCommas(int(batchRate)))
@@ -193,7 +198,7 @@ func fillBatchAddresses(ctx *AppContext, state *checkerState) int {
 	filledCount := 0
 	for filledCount < constants.ImportBatchSize {
 		select {
-		case addr, ok := <-ctx.addressChan:
+		case addr, ok := <-ctx.AddressChan:
 			if !ok {
 				return filledCount
 			}
@@ -207,14 +212,14 @@ func fillBatchAddresses(ctx *AppContext, state *checkerState) int {
 }
 
 // Primary function that gets called from sidecar.go
-func startAddressChecker(ctx *AppContext) {
-	logger.LogStatus(ctx.localLog, constants.LogInfo,
+func StartAddressChecker(ctx *AppContext) {
+	logger.LogStatus(ctx.LocalLog, constants.LogInfo,
 		"Address checker started - batch size: %s",
 		utils.FormatWithCommas(constants.ImportBatchSize))
 
-	ctx.wg.Add(1)
+	ctx.Wg.Add(1)
 	go func() {
-		defer ctx.wg.Done()
+		defer ctx.Wg.Done()
 		runAddressChecker(ctx)
 	}()
 }

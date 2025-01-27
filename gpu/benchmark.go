@@ -20,7 +20,8 @@ type BenchResults struct {
 func RunBenchmark(count int, gen *CUDAGenerator) error {
 	gpuLog := log.New(os.Stdout, "", 0)
 	logger.LogHeaderStatus(gpuLog, constants.LogVideo,
-		"CPU vs GPU Benchmark (%s addresses)", utils.FormatWithCommas(count))
+		"CPU vs GPU Benchmark (%s addresses)",
+		utils.FormatWithCommas(count))
 
 	// CPU Benchmark
 	cpuStart := time.Now()
@@ -44,11 +45,14 @@ func RunBenchmark(count int, gen *CUDAGenerator) error {
 	cpuRateStr := utils.FormatWithCommas(int(cpuRate))
 	gpuRateStr := utils.FormatWithCommas(int(gpuRate))
 
-	logger.LogHeaderStatus(gpuLog, constants.LogVideo, "CPU: %v (%s keys/sec)",
+	logger.LogHeaderStatus(gpuLog, constants.LogVideo,
+		"CPU: %v (%s keys/sec)",
 		cpuTime, cpuRateStr)
-	logger.LogStatus(gpuLog, constants.LogVideo, "GPU: %v (%s keys/sec)",
+	logger.LogStatus(gpuLog, constants.LogVideo,
+		"GPU: %v (%s keys/sec)",
 		gpuTime, gpuRateStr)
-	logger.LogStatus(gpuLog, constants.LogVideo, "Speedup: %.2fx",
+	logger.LogStatus(gpuLog, constants.LogVideo,
+		"Speedup: %.2fx",
 		gpuRate/cpuRate)
 
 	logger.PrintSeparator(constants.LogVideo)

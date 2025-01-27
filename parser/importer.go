@@ -4,6 +4,7 @@ import (
 	"Grendel/addresses"
 	"bufio"
 	"compress/gzip"
+	"encoding/binary"
 	"os"
 	"strings"
 
@@ -37,11 +38,12 @@ func (p *Parser) ImportAddressesFromFile(filename string) error {
 		addr := parts[0]
 		balance := []byte(parts[1])
 
-		// Store in database
+		// Store in database with original address
 		batch.Put([]byte("addr:"+addr), balance)
 
-		// Store in memory map
-		p.addresses[addr] = string(balance)
+		// Store in memory map with hash
+		hash := fastHash(addr)
+		p.addresses[hash] = binary.LittleEndian.Uint64(balance)
 
 		// Categorize address
 		addresses.CategorizeAddress(addr, p.Stats)
