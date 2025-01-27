@@ -1,0 +1,9 @@
+linters-settings:
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+      - performance
+  
+build-tags:
+  - ide
