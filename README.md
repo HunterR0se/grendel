@@ -2,6 +2,30 @@ Grendel
 
 **Author:** [Hunter Rose](https://x.com/HunterR0se)
 
+# Important Notice
+
+This tool was developed as a technical demonstration to illustrate several important concepts:
+
+1. The incredible security of Bitcoin's cryptographic foundations
+
+2. The practical impossibility of randomly generating private keys that match existing Bitcoin addresses
+
+3. The implementation of high-performance computing techniques, including GPU acceleration and parallel processing
+
+As highlighted in the conclusion, even with state-of-the-art hardware (RTX 4090) generating 1.8 million addresses per second, it would take over 120 years to have a reasonable chance of finding a single valid address. This project serves as a practical demonstration of why Bitcoin's cryptographic security is robust against brute-force attacks.
+
+The code base also showcases modern software engineering practices including:
+
+- CUDA GPU optimization
+- Efficient database management
+- Real-time blockchain data processing
+- Performance profiling and optimization
+- Cross-platform systems programming
+
+This project is intended for educational purposes and to demonstrate technical proficiency in cryptography, distributed systems, and high-performance computing. It is not designed or intended as a hacking tool, as the mathematics behind Bitcoin's security make such attempts futile.
+
+Researchers and developers interested in blockchain technology, cryptography, or high-performance computing may find this codebase useful for understanding these concepts in practice.
+
 ## Overview
 
 Grendel is a tool designed to generate and test cryptographic keys against known Bitcoin addresses. The project supports both CPU and NVIDIA GPU acceleration for key generation.
