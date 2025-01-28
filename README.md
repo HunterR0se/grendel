@@ -27,7 +27,7 @@ Key features include:
 
 ### Errata
 
-Yes, I am aware the code is extensive and needs to be cleaned up. Feel free to fork, contribute, or offer suggestions. There are some functions that are too complicated and some functions that can be removed, as they are no longer used.
+Yes, I am aware the code is extensive and needs to be cleaned up. Feel free to fork, contribute, or offer suggestions. There are some functions that are far too complicated and some functions that can be removed, as they are no longer used.
 
 The current speed of ~1.8MM generated addresses per second (including full address matching) on an RTX 4090 is impressive, but I do believe we can improve this speed. Open Source ftw.
 
