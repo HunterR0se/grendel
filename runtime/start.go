@@ -82,7 +82,6 @@ func (p *workerPool) processAddressBatch(ctx *AppContext, batch []*WalletInfo, a
 	// Single batch check
 	ctx.Parser.CheckAddressBatch(addresses, results, balances)
 
-	// Process results in single pass
 	for i := range results {
 		if results[i] {
 			constants.IncrementFound()
@@ -99,6 +98,7 @@ func (p *workerPool) processAddressBatch(ctx *AppContext, batch []*WalletInfo, a
 			go utils.WriteFound(addresses[i], balances[i])
 		}
 	}
+
 }
 
 // -------- HELPER FUNCTIONS AND ADDITIONAL FUNCTIONS ---------------

@@ -16,8 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/exp/rand"
-
 	"github.com/shirou/gopsutil/mem"
 )
 
@@ -413,66 +411,12 @@ func StartGenerator(ctx *AppContext, batchSize int) {
 }
 
 func TestAddressMatching(ctx *AppContext) error {
-	numKeys := constants.GPUTestAddresses
-	startTime := time.Now()
-	matched := 0
-
-	// Get all addresses once instead of repeatedly
-	allAddresses := ctx.Parser.GetAddresses()
-	if len(allAddresses) == 0 {
-		return fmt.Errorf("no addresses loaded for testing")
+	matched, duration, rate, err := CheckAddresses(ctx, constants.GPUTestAddresses)
+	if err != nil {
+		return err
 	}
 
-	logger.LogHeaderStatus(ctx.LocalLog, constants.LogCheck,
-		"Testing Matching against %s addresses",
-		utils.FormatWithCommas(len(allAddresses)))
-	logger.PrintSeparator(constants.LogCheck)
-
-	// Pre-calculate intervals
-	interval := numKeys / 10
-	lastProgress := 0
-
-	// Pre-allocate random source
-	rnd := rand.New(rand.NewSource(uint64(time.Now().UnixNano())))
-
-	for i := 0; i < numKeys; i++ {
-		// Use our pre-allocated random source
-		randomIndex := rnd.Intn(len(allAddresses))
-		testAddr := allAddresses[randomIndex]
-
-		if exists, _ := ctx.Parser.CheckAddress(testAddr); exists {
-			matched++
-		}
-
-		// Show progress every 10%
-		if i > 0 && i%interval == 0 && i/interval > lastProgress {
-			progress := (i * 100) / numKeys
-			currentRate := float64(i) / time.Since(startTime).Seconds()
-			logger.LogStatus(ctx.LocalLog, constants.LogCheck,
-				"Progress: %d%% (%s/sec)",
-				progress,
-				utils.FormatWithCommas(int(currentRate)))
-			lastProgress = i / interval
-		}
-	}
-
-	duration := time.Since(startTime)
-	rate := float64(numKeys) / duration.Seconds()
-
-	logger.LogHeaderStatus(ctx.LocalLog, constants.LogInfo,
-		"Checked %s addresses in %.3f seconds",
-		utils.FormatWithCommas(numKeys),
-		duration.Seconds())
-	logger.LogStatus(ctx.LocalLog, constants.LogInfo,
-		"Matching rate: %s addresses/second",
-		utils.FormatWithCommas(int(rate)))
-	if matched > 0 {
-		logger.LogStatus(ctx.LocalLog, constants.LogInfo,
-			"Found %s matching addresses!",
-			utils.FormatWithCommas(matched))
-	}
-	logger.PrintSeparator(constants.LogInfo)
-
+	ReportAddressCheckResults(ctx, constants.GPUTestAddresses, matched, duration, rate)
 	return nil
 }
 

@@ -13,21 +13,21 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-
-	"golang.org/x/exp/rand"
 )
 
 func Benchmark() {
+	// Single flag for test count
 	count := flag.Int("n", constants.GPUTestAddresses, "Number of keys to generate")
 	flag.Parse()
 
+	// Initialize logging once
 	localLog := log.New(os.Stdout, "", 0)
 
-	// Clear screen
+	// Clear screen and show banner
 	fmt.Print("\033[H\033[2J\n")
 	logger.Banner()
 
-	// Create GPU generator
+	// Initialize GPU with error handling
 	gen, err := gpu.NewCUDAGenerator(&generator.Config{})
 	if err != nil {
 		logger.LogError(localLog, constants.LogError, err, "Failed to create GPU generator")
@@ -41,83 +41,45 @@ func Benchmark() {
 		return
 	}
 
-	// Open the real address database
+	// Open address database with minimal config
 	dbPath := filepath.Join(utils.GetBaseDir(), constants.AddressDBPath)
-	p, err := parser.NewParser(localLog, "", dbPath, false) // Note: false to not reparse
+	p, err := parser.NewParser(localLog, "", dbPath, false) // false = don't reparse
 	if err != nil {
 		logger.LogError(localLog, constants.LogError, err, "Failed to open address database")
 		return
 	}
 	defer p.Cleanup()
 
-	// Load addresses into memory
-	logger.LogHeaderStatus(localLog,
-		constants.LogDB,
-		"Loading addresses into memory...")
+	// Load addresses with performance monitoring
+	logger.LogHeaderStatus(localLog, constants.LogDB, "Loading addresses into memory...")
 
+	// Time address loading
 	loadStart := time.Now()
 	loadedCount, err := p.LoadAllAddresses()
 	if err != nil {
 		logger.LogError(localLog, constants.LogError, err, "Failed to load addresses")
 		return
 	}
-	loadDuration := time.Since(loadStart)
+
+	// Log load performance
 	logger.LogStatus(localLog, constants.LogMem,
 		"Loaded %s addresses in %.3f seconds",
 		utils.FormatWithCommas(int(loadedCount)),
-		loadDuration.Seconds())
+		time.Since(loadStart).Seconds())
 
-	// MATCHING
-	startTime := time.Now()
-	matched := 0
-
-	// Calculate progress intervals
-	interval := *count / 10 // 10% intervals
-	lastProgress := 0
-
-	// Get all addresses into a slice for random selection
-	allAddresses := p.GetAddresses()
-
-	logger.LogStatus(localLog, constants.LogCheck,
-		"Testing Matching against %s addresses",
-		utils.FormatWithCommas(len(allAddresses)))
-	logger.PrintSeparator(constants.LogCheck)
-
-	for i := 0; i < *count; i++ {
-		// Pick a random existing address
-		randomIndex := rand.Intn(len(allAddresses))
-		testAddr := allAddresses[randomIndex]
-
-		if exists, _ := p.CheckAddress(testAddr); exists {
-			matched++
-		}
-
-		// Show progress every 10%
-		if i > 0 && i%interval == 0 && i/interval > lastProgress {
-			progress := (i * 100) / *count
-			currentRate := float64(i) / time.Since(startTime).Seconds()
-			logger.LogStatus(localLog, constants.LogCheck,
-				"Progress: %d%% (%s/sec)",
-				progress,
-				utils.FormatWithCommas(int(currentRate)))
-			lastProgress = i / interval
-		}
+	// Create minimal context
+	ctx := &AppContext{
+		LocalLog: localLog,
+		Parser:   p,
 	}
 
-	duration := time.Since(startTime)
-	rate := float64(*count) / duration.Seconds()
-
-	logger.LogHeaderStatus(localLog, constants.LogInfo,
-		"Checked %s addresses in %.3f seconds",
-		utils.FormatWithCommas(*count),
-		duration.Seconds())
-	logger.LogStatus(localLog, constants.LogInfo,
-		"Matching rate: %s addresses/second",
-		utils.FormatWithCommas(int(rate)))
-	if matched > 0 {
-		logger.LogStatus(localLog, constants.LogInfo,
-			"Found %s matching addresses!",
-			utils.FormatWithCommas(matched))
+	// Run address checking
+	matched, duration, rate, err := CheckAddresses(ctx, *count)
+	if err != nil {
+		logger.LogError(localLog, constants.LogError, err, "Address checking failed")
+		return
 	}
-	logger.PrintSeparator(constants.LogInfo)
+
+	// Report results
+	ReportAddressCheckResults(ctx, *count, matched, duration, rate)
 }

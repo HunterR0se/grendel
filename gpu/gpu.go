@@ -49,6 +49,46 @@ type result struct {
 	addrType generator.AddressType
 }
 
+func NewCUDAGenerator(config *generator.Config) (*CUDAGenerator, error) {
+	// Check for CUDA devices
+	count, err := cuda.GetDeviceCount()
+	if err != cuda.CudaSuccess {
+		return nil, fmt.Errorf("no CUDA devices found")
+	}
+
+	if count == 0 {
+		return nil, fmt.Errorf("no CUDA devices available")
+	}
+
+	// Set the first CUDA device
+	err = cuda.SetDevice(0)
+	if err != cuda.CudaSuccess {
+		if err == cuda.CudaErrorDevicesUnavailable {
+			return nil, fmt.Errorf("GPU is currently in use by another application")
+		}
+		return nil, fmt.Errorf("CUDA error setting device: %d", cuda.GetLastError())
+	}
+
+	// Initialize GPU key generator
+	gpuGen, gpuErr := NewGPUKeyGenerator(constants.GPUBatchBufferSize)
+	if gpuErr != nil {
+		return nil, fmt.Errorf("failed to initialize GPU generator: %v", gpuErr)
+	}
+
+	// Check for any CUDA errors after initialization
+	lastErr := cuda.GetLastError()
+	if lastErr != cuda.CudaSuccess {
+		return nil, fmt.Errorf("CUDA error: %d", lastErr)
+	}
+
+	return &CUDAGenerator{
+		pool:   generator.NewRNGPool(constants.RNGPoolSize),
+		stats:  new(generator.Stats),
+		gpuGen: gpuGen,
+		gpuLog: log.New(os.Stdout, "", 0),
+	}, nil
+}
+
 func (g *CUDAGenerator) Initialize() error {
 	if ret := C.test_cuda_device(); ret != 0 {
 		return fmt.Errorf("CUDA device test failed")
@@ -113,43 +153,6 @@ func (g *CUDAGenerator) Generate(count int) ([]*btcecv2.PrivateKey, []string, []
 	constants.GlobalStats.Unlock()
 
 	return keys, addrs, types, nil
-}
-
-func NewCUDAGenerator(config *generator.Config) (*CUDAGenerator, error) {
-	count, err := cuda.GetDeviceCount()
-	if err != cuda.CudaSuccess {
-		return nil, fmt.Errorf("no CUDA devices found")
-	}
-
-	if count == 0 {
-		return nil, fmt.Errorf("no CUDA devices available")
-	}
-
-	err = cuda.SetDevice(0)
-	if err != cuda.CudaSuccess {
-		if err == cuda.CudaErrorDevicesUnavailable {
-			return nil, fmt.Errorf("GPU is currently in use by another application")
-		}
-		return nil, fmt.Errorf("CUDA error setting device: %d", cuda.GetLastError())
-	}
-
-	// Add back the gpuGen initialization that I removed
-	gpuGen, gpuErr := NewGPUKeyGenerator(constants.GPUBatchBufferSize)
-	if gpuErr != nil {
-		return nil, fmt.Errorf("failed to initialize GPU generator: %v", gpuErr)
-	}
-
-	lastErr := cuda.GetLastError()
-	if lastErr != cuda.CudaSuccess {
-		return nil, fmt.Errorf("CUDA error: %d", lastErr)
-	}
-
-	return &CUDAGenerator{
-		pool:   generator.NewRNGPool(constants.RNGPoolSize),
-		stats:  new(generator.Stats),
-		gpuGen: gpuGen, // This was missing!
-		gpuLog: log.New(os.Stdout, "", 0),
-	}, nil
 }
 
 func (g *CUDAGenerator) generateCombined(keyData []KeyAddressData, count int) error {
