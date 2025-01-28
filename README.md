@@ -374,6 +374,41 @@ sudo dpkg-reconfigure -f noninteractive tzdata
     sudo ubuntu-drivers autoinstall
     ```
 
+## Bonus (Coming Soon!)
+
+    **The entire f\*cking blockchain of addresses!**
+
+    ```bash
+    # create the directory
+    mkdir -p .config
+    ```
+
+    You MUST install ipfs to do this;
+
+    ```bash
+    wget https://dist.ipfs.tech/kubo/v0.32.1/kubo_v0.32.1_linux-amd64.tar.gz
+    tar -xvzf kubo_v0.32.1_linux-amd64.tar.gz
+    cd kubo
+    sudo bash install.sh
+    ```
+
+    Now, get the full list, making sure you are in the correct directory first.
+
+    ```bash
+    cd ~/.config
+    ipfs get QmbxzMK853WF4qd9Wmbt3tUKu36eSqN5E7kqot1ft5WPmT -o addresses.txt.gz
+    ```
+
+    This retrieves the entire 1.8GB+ address file from IPFS. Once downloaded, run;
+
+    ```bash
+    grendel --import
+    ```
+
+    And this will create the full LevelDB of all addresses from the Blockchain (over 55 million total addresses with balances).
+
+    - Note: The import process is very efficient. Importing 55 million addresses will happen quickly, with logs, and will take ~3GB of space. Once done, you can discard the original addresses.txt.gz file, as the binary uses the database in `.bitcoin/addresses.db` after the import is complete.
+
 ## Contributing
 
 Contributions are welcome! Please fork the repository and submit pull requests with your changes.
