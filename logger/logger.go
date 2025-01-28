@@ -169,6 +169,9 @@ func logWithTypeChange(logger *log.Logger, logType string, message string) {
 	logger.Print(message)
 	lastLogType = logType
 	lineCounter++
+	if lineCounter >= 42 {
+		lineCounter = 0 // Reset counter every 42 lines
+	}
 }
 
 func LogGeneratorStats(
