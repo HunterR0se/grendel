@@ -241,12 +241,24 @@ fi
 
 echo -e "${GREEN}✅ Deployment successful!${NC}"
 
-# Cleanup local binary
-echo -e "${YELLOW}🧹 Cleaning up local binary...${NC}"
-if ! rm "$BUILD_DIR/$BINARY_NAME"; then
-    echo -e "${RED}⚠️  Failed to remove local binary${NC}"
+# Cleanup local binary only if not in release mode
+if [ "$MODE" != "release" ]; then
+    echo -e "${YELLOW}🧹 Cleaning up local binary...${NC}"
+    if ! rm "$BUILD_DIR/$BINARY_NAME"; then
+        echo -e "${RED}⚠️  Failed to remove local binary${NC}"
+    else
+        echo -e "${GREEN}✅ Local binary cleaned up${NC}"
+    fi
 else
-    echo -e "${GREEN}✅ Local binary cleaned up${NC}"
+    # In release mode, copy libkeygen.so to bin directory
+    echo -e "${BLUE}📦 Copying libkeygen.so to bin directory...${NC}"
+    if ! cp /usr/local/lib/libkeygen.so "$BUILD_DIR/"; then
+        echo -e "${RED}⚠️  Failed to copy libkeygen.so to bin directory${NC}"
+    else
+        echo -e "${GREEN}✅ libkeygen.so copied to bin directory${NC}"
+    fi
+
+    echo -e "${GREEN}✅ Release artifacts saved in bin directory${NC}"
 fi
 
 echo -e "${GREEN}🎉 Build and deploy completed!${NC}"

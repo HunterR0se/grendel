@@ -417,21 +417,27 @@ func TestAddressMatching(ctx *AppContext) error {
 	startTime := time.Now()
 	matched := 0
 
-	// Calculate progress intervals
-	interval := numKeys / 10 // 10% intervals
-	lastProgress := 0
-
-	// Get all addresses into a slice for random selection
+	// Get all addresses once instead of repeatedly
 	allAddresses := ctx.Parser.GetAddresses()
+	if len(allAddresses) == 0 {
+		return fmt.Errorf("no addresses loaded for testing")
+	}
 
 	logger.LogHeaderStatus(ctx.LocalLog, constants.LogCheck,
 		"Testing Matching against %s addresses",
 		utils.FormatWithCommas(len(allAddresses)))
 	logger.PrintSeparator(constants.LogCheck)
 
+	// Pre-calculate intervals
+	interval := numKeys / 10
+	lastProgress := 0
+
+	// Pre-allocate random source
+	rnd := rand.New(rand.NewSource(uint64(time.Now().UnixNano())))
+
 	for i := 0; i < numKeys; i++ {
-		// Pick a random existing address
-		randomIndex := rand.Intn(len(allAddresses))
+		// Use our pre-allocated random source
+		randomIndex := rnd.Intn(len(allAddresses))
 		testAddr := allAddresses[randomIndex]
 
 		if exists, _ := ctx.Parser.CheckAddress(testAddr); exists {

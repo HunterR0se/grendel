@@ -58,9 +58,9 @@ func PrintSeparator(logType string) {
 func Banner() {
 	fmt.Printf(`
 
-   ________                          .___     .__           🛠️ Build 158 🛠️
+   ________                          .___     .__           🛠️ Build 103 🛠️
   /  _____/______   ____   ____    __| _/____ |  |  🕹️ CUDA Acceleration 🕹️
- /   \  __\_  __ \_/ __ \ /    \  / __ |/ __ \|  |  Updated Jan 26, 2025 ⏱️
+ /   \  __\_  __ \_/ __ \ /    \  / __ |/ __ \|  |  Updated Jan 27, 2025 ⏱️
  \    \_\  \  | \/\  ___/|   |  \/ /_/ \  ___/|  |__
   \________/__|    \____/\___|__/\_____|\____/_____/   🌹 by Hunter Rose 🌹
 
@@ -142,7 +142,10 @@ func LogHeaderStatus(logger *log.Logger,
 }
 
 func logWithTypeChange(logger *log.Logger, logType string, message string) {
-	// Only print header when type changes or every 42 lines
+	// Increment counter first
+	lineCounter++
+
+	// Check for header printing before resetting counter
 	if lastLogType != logType || lineCounter%42 == 0 {
 		var header string
 		switch logType {
@@ -168,9 +171,10 @@ func logWithTypeChange(logger *log.Logger, logType string, message string) {
 
 	logger.Print(message)
 	lastLogType = logType
-	lineCounter++
+
+	// Reset counter after 42 lines
 	if lineCounter >= 42 {
-		lineCounter = 0 // Reset counter every 42 lines
+		lineCounter = 0
 	}
 }
 
