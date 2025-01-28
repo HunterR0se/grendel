@@ -14,10 +14,6 @@ Grendel
 
 Grendel is a tool designed to generate and test cryptographic keys against known Bitcoin addresses. The project supports both CPU and NVIDIA GPU acceleration for key generation.
 
-Hat tip to;
-https://github.com/Harold-Glitch/bitreverse/blob/master/secp256k1.cuh
-https://github.com/XopMC/CudaBrainSecp/tree/main/GPU
-
 Key features include:
 
 - Detection of CPU or NVIDIA GPU availability on startup.
@@ -382,6 +378,10 @@ sudo dpkg-reconfigure -f noninteractive tzdata
 
 Contributions are welcome! Please fork the repository and submit pull requests with your changes.
 
+Hat tip to;
+https://github.com/Harold-Glitch/bitreverse/blob/master/secp256k1.cuh
+https://github.com/XopMC/CudaBrainSecp/tree/main/GPU
+
 ### Real-World Consideration
 
 The actual probability of randomly generating a key that matches an existing address with a non-zero balance is extremely low, perhaps on the order of 1 in 10^12 or even lower, due to the vast number of possible keys and the relatively small number of addresses with non-zero balances.
@@ -395,9 +395,3 @@ Given the current generation and matching rater and a realistic probability of f
 The MIT License (MIT)
 
 Copyright (c) 2024 Hunter Rose (x.com/HunterR0se)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
