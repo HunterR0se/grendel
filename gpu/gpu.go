@@ -17,10 +17,7 @@ import (
 	"Grendel/generator"
 	"fmt"
 	"log"
-	"math/big"
 	"os"
-	"strings"
-	"sync"
 	"unsafe"
 
 	btcecv2 "github.com/btcsuite/btcd/btcec/v2"
@@ -50,13 +47,6 @@ type CUDAGenerator struct {
 		types    []generator.AddressType
 		privKeys []*btcecv2.PrivateKey
 	}
-
-	// Pools for address encoding/decoding
-	base58Pool struct {
-		ints    sync.Pool    // Pool of *big.Int
-		scratch sync.Pool    // Pool of []byte for encoding/decoding
-	}
-	addrBuilders sync.Pool  // Pool of strings.Builder for address strings
 }
 
 type result struct {
@@ -114,26 +104,6 @@ func NewCUDAGenerator(config *generator.Config) (*CUDAGenerator, error) {
 			types:    make([]generator.AddressType, 0, constants.GPUBatchBufferSize),
 			privKeys: make([]*btcecv2.PrivateKey, 0, constants.GPUBatchBufferSize),
 		},
-		base58Pool: struct {
-			ints    sync.Pool
-			scratch sync.Pool
-		}{
-			ints: sync.Pool{
-				New: func() interface{} {
-					return new(big.Int)
-				},
-			},
-			scratch: sync.Pool{
-				New: func() interface{} {
-					return make([]byte, 32)
-				},
-			},
-		},
-		addrBuilders: sync.Pool{
-			New: func() interface{} {
-				return &strings.Builder{}
-			},
-		},
 	}, nil
 }
 
@@ -177,7 +147,7 @@ func (g *CUDAGenerator) Generate(count int) ([]*btcecv2.PrivateKey, []string, []
 	// Process results using our pre-allocated buffers
 	var legacyCount, segwitCount, nativeCount int
 	for i := 0; i < count; i++ {
-		addr, addrType, err := g.createAddressFromHash160(
+		addr, addrType, err := createAddressFromHash160(
 			g.batchBuffers.keys[i].Hash160[:],
 			g.batchBuffers.keys[i].AddressType,
 		)
@@ -232,14 +202,11 @@ func (g *CUDAGenerator) Close() error {
 		return fmt.Errorf("CUDA error on close: %d", lastErr)
 	}
 
-	// Clear batch buffers and pools
+	// Clear batch buffers
 	g.batchBuffers.keys = nil
 	g.batchBuffers.addrs = nil
 	g.batchBuffers.types = nil
 	g.batchBuffers.privKeys = nil
-	g.base58Pool.ints = sync.Pool{}
-	g.base58Pool.scratch = sync.Pool{}
-	g.addrBuilders = sync.Pool{}
 
 	return nil
 }
@@ -255,17 +222,11 @@ func btoi(b bool) C.int {
 	return C.int(0)
 }
 
-func (g *CUDAGenerator) createAddressFromHash160(hash160 []byte, addrType byte) (string, generator.AddressType, error) {
+func createAddressFromHash160(hash160 []byte, addrType byte) (string, generator.AddressType, error) {
 	var addr btcutil.Address
 	var err error
 	var addressType generator.AddressType
 
-	// Get string builder from pool
-	builder := g.addrBuilders.Get().(*strings.Builder)
-	builder.Reset()
-	defer g.addrBuilders.Put(builder)
-
-	// Create address object
 	switch addrType {
 	case 0:
 		addr, err = btcutil.NewAddressPubKeyHash(hash160, &chaincfg.MainNetParams)
@@ -282,12 +243,8 @@ func (g *CUDAGenerator) createAddressFromHash160(hash160 []byte, addrType byte) 
 		return "", addressType, err
 	}
 
-	// Use builder to create address string
-	builder.WriteString(addr.EncodeAddress())
-	result := builder.String()
-
 	constants.IncrementGenerated()
-	return result, addressType, nil
+	return addr.EncodeAddress(), addressType, nil
 }
 
 func (g *CUDAGenerator) TestGeneration() error {

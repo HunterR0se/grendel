@@ -120,8 +120,8 @@ Researchers and developers interested in blockchain technology, cryptography, or
 
     ```bash
     chmod +x bin/grendel
-    sudo mv bin/grendel /usr/local/bin/
-    sudo mv bin/libkeygen.so /usr/local/lib
+    mv bin/grendel /usr/local/bin/
+    mv bin/libkeygen.so /usr/local/lib
     ```
 
 3. **Verify Installation:**
@@ -157,9 +157,9 @@ If running with `--profile` enabled (not shown in the list), the binary will cre
 
 Example:
 
-````bash
-go tool pprof -alloc_objects memory.pprof
-go tool pprof cpu.pprof```
+    ```bash
+    go tool pprof -alloc_objects memory.pprof
+    go tool pprof cpu.pprof```
 
 Typically, `top 10` is the best place to start.
 
@@ -175,13 +175,13 @@ Typically, `top 10` is the best place to start.
 1. **Update System:**
 
     ```bash
-    sudo apt update
+    apt update
     ```
 
 2. **Install Basic Tools:**
 
     ```bash
-    sudo apt install git vim zsh tmux
+    apt install git vim zsh tmux
     ```
 
 3. **Configure Zsh as Default Shell:**
@@ -198,26 +198,26 @@ Typically, `top 10` is the best place to start.
 
 5. **Set Time Zone:**
 
-a. First, let's update the system timezone database:
+    a. First, let's update the system timezone database:
 
-```bash
-sudo apt-get update
-sudo apt-get install tzdata
-````
+    ```bash
+    apt-get update
+    apt-get install tzdata
+    ```
 
-b. Then set the timezone:
+    b. Then set the timezone:
 
-```bash
-echo "America/New_York" | sudo tee /etc/timezone
-sudo dpkg-reconfigure -f noninteractive tzdata
-```
+    ```bash
+    echo "America/New_York" | tee /etc/timezone
+    dpkg-reconfigure -f noninteractive tzdata
+    ```
 
 #### Bitcoin Core Installation
 
 1. **Install Dependencies:**
 
     ```bash
-    sudo apt install apt-transport-https curl gnupg wget tmux htop
+    apt install apt-transport-https curl gnupg wget tmux htop
     ```
 
 2. **Download Bitcoin Core:**
@@ -232,7 +232,7 @@ sudo dpkg-reconfigure -f noninteractive tzdata
 
     ```bash
     tar zxvf bitcoin-28.0-x86_64-linux-gnu.tar.gz
-    sudo install -m 0755 -o root -g root -t /usr/local/bin bitcoin-28.0/bin/*
+    install -m 0755 -o root -g root -t /usr/local/bin bitcoin-28.0/bin/*
     ```
 
 4. **Cleanup:**
@@ -278,18 +278,18 @@ sudo dpkg-reconfigure -f noninteractive tzdata
 
     - SSH into the server and run:
 
-        ```bash
-        grendel --import
-        ```
+    ```bash
+    grendel --import
+    ```
 
     - Best practice is to run in a tmux terminal:
 
-        ```bash
-        tmux new -s Grendel
-        grendel run
-        ```
+    ```bash
+    tmux new -s Grendel
+    grendel run
+    ```
 
-        You can then exit with `CTRL+B` then `D` and return to the tmux session with `tmux a -t Grendel` to monitor the application.
+    You can then exit with `CTRL+B` then `D` and return to the tmux session with `tmux a -t Grendel` to monitor the application.
 
 ## tmux Color Issues
 
@@ -316,7 +316,7 @@ sudo dpkg-reconfigure -f noninteractive tzdata
 3. Install necessary fonts and set them in your terminal:
 
     ```bash
-    sudo apt install fonts-noto-color-emoji fonts-powerline
+    apt install fonts-noto-color-emoji fonts-powerline
     ```
 
 4. Add to your `~/.bashrc` or `~/.zshrc`:
@@ -359,22 +359,22 @@ sudo dpkg-reconfigure -f noninteractive tzdata
 1. **Update System and Install Dependencies:**
 
     ```bash
-    sudo apt update
-    sudo apt install software-properties-common
+    apt update
+    apt install software-properties-common
     ```
 
 2. **Add Graphics Drivers PPA:**
 
     ```bash
-    sudo add-apt-repository ppa:graphics-drivers/ppa
-    sudo apt update
+    add-apt-repository ppa:graphics-drivers/ppa
+    apt update
     ```
 
 3. **Install and Auto-Install NVIDIA Drivers:**
 
     ```bash
-    sudo apt install ubuntu-drivers-common
-    sudo ubuntu-drivers autoinstall
+    apt install ubuntu-drivers-common
+    ubuntu-drivers autoinstall
     ```
 
 ## Bonus (Coming Soon!)
@@ -392,7 +392,7 @@ sudo dpkg-reconfigure -f noninteractive tzdata
     wget https://dist.ipfs.tech/kubo/v0.32.1/kubo_v0.32.1_linux-amd64.tar.gz
     tar -xvzf kubo_v0.32.1_linux-amd64.tar.gz
     cd kubo
-    sudo bash install.sh
+    bash install.sh
     ```
 
     Now, get the full list, making sure you are in the correct directory first.
@@ -433,3 +433,7 @@ Given the current generation and matching rater and a realistic probability of f
 The MIT License (MIT)
 
 Copyright (c) 2024 Hunter Rose (x.com/HunterR0se)
+
+```
+
+```

@@ -129,7 +129,6 @@ func LoadBlocks(ctx *AppContext) error {
 		ctx.BlockLoader.LogAddressSummary("Block Processing Complete", true)
 	}
 
-	logger.LogStatus(ctx.LocalLog, constants.LogDB, "Block loader successfully started.")
 	return StartBackgroundLoader(ctx)
 }
 

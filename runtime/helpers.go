@@ -34,7 +34,7 @@ func HandleImport(localLog *log.Logger) error {
 	}
 
 	// Import addresses from the compressed file
-	importPath := "./config/addresses.txt.gz"
+	importPath := ".config/addresses.txt.gz"
 	logger.LogStatus(localLog, constants.LogInfo, "Importing addresses from: %s", importPath)
 
 	if err := importParser.ImportAddressesFromFile(importPath); err != nil {

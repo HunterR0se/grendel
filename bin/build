@@ -122,6 +122,7 @@ fi
 echo -e "${YELLOW}📤 Copying CUDA files to remote...${NC}"
 if ! rsync -av --exclude='libkeygen.so' gpu/keygen/ "${REMOTE_SERVER}:~/keygen/" >/dev/null 2>&1; then
     echo -e "${RED}❌ Failed to copy CUDA files to remote${NC}"
+    echo -e "${RED}❌ Are you sure rsync is installed on remote?${NC}"
     exit 1
 fi
 
@@ -154,7 +155,7 @@ fi
 
 # Copy to system lib directory on remote and run ldconfig
 echo -e "${YELLOW}📦 Installing CUDA library on remote...${NC}"
-if ! ssh "${REMOTE_SERVER}" "sudo cp ~/keygen/libkeygen.so /usr/local/lib/ && sudo ldconfig" >/dev/null 2>&1; then
+if ! ssh "${REMOTE_SERVER}" "cp ~/keygen/libkeygen.so /usr/local/lib/ && ldconfig" >/dev/null 2>&1; then
     echo -e "${RED}❌ Failed to install CUDA library on remote${NC}"
     exit 1
 fi

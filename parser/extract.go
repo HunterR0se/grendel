@@ -1,30 +1,38 @@
 package parser
 
 import (
+	"Grendel/constants"
+	"Grendel/utils"
 	"bufio"
 	"compress/gzip"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/syndtr/goleveldb/leveldb"
 )
 
 func ExtractAddresses() error {
-	// Path to your LevelDB database
-	dbPath := ".addresses.db" // adjust this path
+	// Use proper database path
+	dbPath := filepath.Join(utils.GetBaseDir(), constants.AddressDBPath)
 
 	// Open the database
 	db, err := leveldb.OpenFile(dbPath, nil)
 	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+		return fmt.Errorf("failed to open database: %v", err)
 	}
 	defer db.Close()
 
+	// Ensure config directory exists
+	if err := os.MkdirAll(".config", 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %v", err)
+	}
+
 	// Create output file with gzip compression
-	outFile, err := os.Create("config/addresses.txt.gz")
+	outFile, err := os.Create(".config/addresses.txt.gz")
 	if err != nil {
-		log.Fatalf("Failed to create output file: %v", err)
+		return fmt.Errorf("failed to create output file: %v", err)
 	}
 	defer outFile.Close()
 
@@ -39,14 +47,21 @@ func ExtractAddresses() error {
 	defer iter.Release()
 
 	count := 0
+	skipped := 0
 	for iter.Next() {
 		key := iter.Key()
 		if len(key) > 5 && string(key[:5]) == "addr:" {
 			addr := string(key[5:])
 			balance := iter.Value()
 
-			// Write address and balance to file
-			_, err := fmt.Fprintf(writer, "%s,%s\n", addr, balance)
+			// Skip invalid balances but count them
+			if len(balance) != 8 {
+				skipped++
+				continue
+			}
+
+			// Write address and hex-encoded balance
+			_, err := fmt.Fprintf(writer, "%s,%x\n", addr, balance)
 			if err != nil {
 				log.Printf("Error writing to file: %v", err)
 				continue
@@ -59,6 +74,10 @@ func ExtractAddresses() error {
 	writer.Flush()
 	gzWriter.Close()
 
-	fmt.Printf("Exported %d addresses to addresses.txt.gz\n", count)
-	return err
+	fmt.Printf("Exported %s addresses to addresses.txt.gz\n",
+		utils.FormatWithCommas(count))
+	if skipped > 0 {
+		fmt.Printf("Skipped %d addresses with invalid balances\n", skipped)
+	}
+	return iter.Error()
 }
