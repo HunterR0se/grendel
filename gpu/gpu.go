@@ -17,8 +17,10 @@ import (
 	"Grendel/generator"
 	"fmt"
 	"log"
+	"math/big"
 	"os"
-	"sync/atomic"
+	"strings"
+	"sync"
 	"unsafe"
 
 	btcecv2 "github.com/btcsuite/btcd/btcec/v2"
@@ -40,6 +42,21 @@ type CUDAGenerator struct {
 	stats  *generator.Stats
 	gpuGen *GPUKeyGenerator
 	gpuLog *log.Logger
+
+	// Pre-allocated buffers that persist between Generate calls
+	batchBuffers struct {
+		keys     []KeyAddressData
+		addrs    []string
+		types    []generator.AddressType
+		privKeys []*btcecv2.PrivateKey
+	}
+
+	// Pools for address encoding/decoding
+	base58Pool struct {
+		ints    sync.Pool    // Pool of *big.Int
+		scratch sync.Pool    // Pool of []byte for encoding/decoding
+	}
+	addrBuilders sync.Pool  // Pool of strings.Builder for address strings
 }
 
 type result struct {
@@ -86,6 +103,37 @@ func NewCUDAGenerator(config *generator.Config) (*CUDAGenerator, error) {
 		stats:  new(generator.Stats),
 		gpuGen: gpuGen,
 		gpuLog: log.New(os.Stdout, "", 0),
+		batchBuffers: struct {
+			keys     []KeyAddressData
+			addrs    []string
+			types    []generator.AddressType
+			privKeys []*btcecv2.PrivateKey
+		}{
+			keys:     make([]KeyAddressData, 0, constants.GPUBatchBufferSize),
+			addrs:    make([]string, 0, constants.GPUBatchBufferSize),
+			types:    make([]generator.AddressType, 0, constants.GPUBatchBufferSize),
+			privKeys: make([]*btcecv2.PrivateKey, 0, constants.GPUBatchBufferSize),
+		},
+		base58Pool: struct {
+			ints    sync.Pool
+			scratch sync.Pool
+		}{
+			ints: sync.Pool{
+				New: func() interface{} {
+					return new(big.Int)
+				},
+			},
+			scratch: sync.Pool{
+				New: func() interface{} {
+					return make([]byte, 32)
+				},
+			},
+		},
+		addrBuilders: sync.Pool{
+			New: func() interface{} {
+				return &strings.Builder{}
+			},
+		},
 	}, nil
 }
 
@@ -105,42 +153,48 @@ func (g *CUDAGenerator) Generate(count int) ([]*btcecv2.PrivateKey, []string, []
 		count = g.gpuGen.batchSize
 	}
 
-	// Pre-allocate all slices
-	hostBuffer := make([]KeyAddressData, count)
-	addrs := make([]string, count)
-	types := make([]generator.AddressType, count)
-	// Only allocate private keys when needed
-	keys := make([]*btcecv2.PrivateKey, count)
+	// Grow buffers if needed, reuse if possible
+	if cap(g.batchBuffers.keys) < count {
+		// Allocate with some extra capacity to avoid frequent resizing
+		capacity := count + (count / 4)
+		g.batchBuffers.keys = make([]KeyAddressData, count, capacity)
+		g.batchBuffers.addrs = make([]string, count, capacity)
+		g.batchBuffers.types = make([]generator.AddressType, count, capacity)
+		g.batchBuffers.privKeys = make([]*btcecv2.PrivateKey, count, capacity)
+	} else {
+		// Reuse existing buffers, just reslice
+		g.batchBuffers.keys = g.batchBuffers.keys[:count]
+		g.batchBuffers.addrs = g.batchBuffers.addrs[:count]
+		g.batchBuffers.types = g.batchBuffers.types[:count]
+		g.batchBuffers.privKeys = g.batchBuffers.privKeys[:count]
+	}
 
-	// Generate on GPU
-	if err := g.generateCombined(hostBuffer, count); err != nil {
+	// Generate on GPU using our pre-allocated buffer
+	if err := g.generateCombined(g.batchBuffers.keys, count); err != nil {
 		return nil, nil, nil, err
 	}
 
-	// Process results without creating private keys
-	var legacyCount, segwitCount, nativeCount uint64
-
-	// Use a single loop instead of goroutines for this part
+	// Process results using our pre-allocated buffers
+	var legacyCount, segwitCount, nativeCount int
 	for i := 0; i < count; i++ {
-		addr, addrType, err := createAddressFromHash160(
-			hostBuffer[i].Hash160[:],
-			hostBuffer[i].AddressType,
+		addr, addrType, err := g.createAddressFromHash160(
+			g.batchBuffers.keys[i].Hash160[:],
+			g.batchBuffers.keys[i].AddressType,
 		)
 		if err != nil {
 			continue
 		}
 
-		addrs[i] = addr
-		types[i] = addrType
+		g.batchBuffers.addrs[i] = addr
+		g.batchBuffers.types[i] = addrType
 
-		// Count stats
-		switch hostBuffer[i].AddressType {
+		switch g.batchBuffers.keys[i].AddressType {
 		case 0:
-			atomic.AddUint64(&legacyCount, 1)
+			legacyCount++
 		case 1:
-			atomic.AddUint64(&segwitCount, 1)
+			segwitCount++
 		case 2:
-			atomic.AddUint64(&nativeCount, 1)
+			nativeCount++
 		}
 	}
 
@@ -149,10 +203,10 @@ func (g *CUDAGenerator) Generate(count int) ([]*btcecv2.PrivateKey, []string, []
 	constants.GlobalStats.LegacyCount += int64(legacyCount)
 	constants.GlobalStats.SegwitCount += int64(segwitCount)
 	constants.GlobalStats.NativeCount += int64(nativeCount)
-	constants.GlobalStats.Generated += legacyCount + segwitCount + nativeCount
+	constants.GlobalStats.Generated += uint64(legacyCount + segwitCount + nativeCount)
 	constants.GlobalStats.Unlock()
 
-	return keys, addrs, types, nil
+	return g.batchBuffers.privKeys, g.batchBuffers.addrs, g.batchBuffers.types, nil
 }
 
 func (g *CUDAGenerator) generateCombined(keyData []KeyAddressData, count int) error {
@@ -177,6 +231,16 @@ func (g *CUDAGenerator) Close() error {
 	if lastErr := cuda.GetLastError(); lastErr != cuda.CudaSuccess {
 		return fmt.Errorf("CUDA error on close: %d", lastErr)
 	}
+
+	// Clear batch buffers and pools
+	g.batchBuffers.keys = nil
+	g.batchBuffers.addrs = nil
+	g.batchBuffers.types = nil
+	g.batchBuffers.privKeys = nil
+	g.base58Pool.ints = sync.Pool{}
+	g.base58Pool.scratch = sync.Pool{}
+	g.addrBuilders = sync.Pool{}
+
 	return nil
 }
 
@@ -191,11 +255,17 @@ func btoi(b bool) C.int {
 	return C.int(0)
 }
 
-func createAddressFromHash160(hash160 []byte, addrType byte) (string, generator.AddressType, error) {
+func (g *CUDAGenerator) createAddressFromHash160(hash160 []byte, addrType byte) (string, generator.AddressType, error) {
 	var addr btcutil.Address
 	var err error
 	var addressType generator.AddressType
 
+	// Get string builder from pool
+	builder := g.addrBuilders.Get().(*strings.Builder)
+	builder.Reset()
+	defer g.addrBuilders.Put(builder)
+
+	// Create address object
 	switch addrType {
 	case 0:
 		addr, err = btcutil.NewAddressPubKeyHash(hash160, &chaincfg.MainNetParams)
@@ -212,8 +282,12 @@ func createAddressFromHash160(hash160 []byte, addrType byte) (string, generator.
 		return "", addressType, err
 	}
 
+	// Use builder to create address string
+	builder.WriteString(addr.EncodeAddress())
+	result := builder.String()
+
 	constants.IncrementGenerated()
-	return addr.EncodeAddress(), addressType, nil
+	return result, addressType, nil
 }
 
 func (g *CUDAGenerator) TestGeneration() error {

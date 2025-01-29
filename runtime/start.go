@@ -33,11 +33,15 @@ func setupWorkerPool(ctx *AppContext) *workerPool {
 	pool.wg.Add(numWorkers)
 
 	for i := 0; i < numWorkers; i++ {
-		go pool.startWorker(ctx)
+		workerID := i // Capture the loop variable
+		go func() {
+			pool.startWorker(ctx, workerID)
+			pool.wg.Done()
+		}()
 	}
 
-	logger.LogStatus(ctx.LocalLog, constants.LogInfo,
-		"Worker Pool - %d (workers) %s (buffer)",
+	logger.LogHeaderStatus(ctx.LocalLog, constants.LogInfo,
+		"* Pool - %d (workers) %s (buffer)",
 		numWorkers,
 		utils.FormatWithCommas(constants.ChannelBuffer))
 
@@ -50,11 +54,14 @@ var addressBatchPool = sync.Pool{
 	},
 }
 
-func (p *workerPool) startWorker(ctx *AppContext) {
-	defer p.wg.Done()
-
+func (p *workerPool) startWorker(ctx *AppContext, workerID int) {
 	batch := make([]*WalletInfo, 0, constants.AddressCheckerBatchSize)
 	addresses := make([]string, 0, constants.AddressCheckerBatchSize)
+
+	if constants.DebugMode && ctx.LocalLog != nil {
+		logger.LogDebug(ctx.LocalLog, constants.LogInfo,
+			"Worker %d started", workerID)
+	}
 
 	for addr := range p.workChan {
 		batch = append(batch, addr)
@@ -62,6 +69,11 @@ func (p *workerPool) startWorker(ctx *AppContext) {
 
 		// Process when batch is full
 		if len(batch) >= constants.AddressCheckerBatchSize {
+			if constants.DebugMode && ctx.LocalLog != nil {
+				logger.LogDebug(ctx.LocalLog, constants.LogInfo,
+					"Worker %d processing batch of %d addresses",
+					workerID, len(batch))
+			}
 			p.processAddressBatch(ctx, batch, addresses)
 			batch = batch[:0]
 			addresses = addresses[:0]
@@ -70,7 +82,17 @@ func (p *workerPool) startWorker(ctx *AppContext) {
 
 	// Process any remaining addresses
 	if len(batch) > 0 {
+		if constants.DebugMode && ctx.LocalLog != nil {
+			logger.LogDebug(ctx.LocalLog, constants.LogInfo,
+				"Worker %d processing final batch of %d addresses",
+				workerID, len(batch))
+		}
 		p.processAddressBatch(ctx, batch, addresses)
+	}
+
+	if constants.DebugMode && ctx.LocalLog != nil {
+		logger.LogDebug(ctx.LocalLog, constants.LogInfo,
+			"Worker %d shutting down", workerID)
 	}
 }
 
@@ -98,10 +120,7 @@ func (p *workerPool) processAddressBatch(ctx *AppContext, batch []*WalletInfo, a
 			go utils.WriteFound(addresses[i], balances[i])
 		}
 	}
-
 }
-
-// -------- HELPER FUNCTIONS AND ADDITIONAL FUNCTIONS ---------------
 
 func newCheckerState() *checkerState {
 	state := &checkerState{
@@ -117,7 +136,6 @@ func newCheckerState() *checkerState {
 }
 
 func runAddressChecker(ctx *AppContext) {
-	logger.LogStatus(ctx.LocalLog, constants.LogInfo, "Block Status logger Started")
 	defer logger.LogDebug(ctx.LocalLog, constants.LogInfo, "Stats logger stopped")
 
 	state := newCheckerState()
@@ -215,7 +233,7 @@ func fillBatchAddresses(ctx *AppContext, state *checkerState) int {
 func StartAddressChecker(ctx *AppContext) {
 	logger.LogStatus(ctx.LocalLog, constants.LogInfo,
 		"Address checker started - batch size: %s",
-		utils.FormatWithCommas(constants.ImportBatchSize))
+		utils.FormatWithCommas(constants.AddressCheckerBatchSize))
 
 	ctx.Wg.Add(1)
 	go func() {

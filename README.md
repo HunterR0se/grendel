@@ -153,10 +153,13 @@ Researchers and developers interested in blockchain technology, cryptography, or
 
 #### Profiling
 
-If running with `--profile` enabled (not shown in the list), the binary will create a `cpu_profile.pprof` and `/gpu_profile.pprof` file, which can be checked with go's pprof profiling.
+If running with `--profile` enabled (not shown in the list), the binary will create a `cpu.pprof` and `/memory.pprof` file, which can be checked with go's pprof profiling.
 
 Example:
-`go tool pprof cpu_profile.pprof `
+
+````bash
+go tool pprof -alloc_objects memory.pprof
+go tool pprof cpu.pprof```
 
 Typically, `top 10` is the best place to start.
 
@@ -200,7 +203,7 @@ a. First, let's update the system timezone database:
 ```bash
 sudo apt-get update
 sudo apt-get install tzdata
-```
+````
 
 b. Then set the timezone:
 

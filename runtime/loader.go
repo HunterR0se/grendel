@@ -248,6 +248,8 @@ func StartAddressGeneration(ctx *AppContext) error {
 		ctx.MemLimits.ChannelBuffer/1000,
 		ctx.MemLimits.RNGPoolSize/1000)
 
+	logger.PrintSeparator(constants.LogMem)
+
 	// ctx.addressChan = make(chan *WalletInfo, ctx.memLimits.ChannelBuffer)
 	ctx.DoneChan = make(chan struct{})
 	batchSize := ctx.MemLimits.BatchSize

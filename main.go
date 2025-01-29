@@ -20,10 +20,10 @@ import (
 )
 
 var (
-	localLog      *log.Logger
-	cachedBaseDir string
-	baseDirOnce   sync.Once
-	lastStatsTime = time.Now()
+	localLog *log.Logger
+	// cachedBaseDir string
+	baseDirOnce sync.Once
+	// lastStatsTime = time.Now()
 )
 
 func main() {
@@ -36,31 +36,50 @@ func main() {
 	gpuInfo := gpu.CheckForGPU()
 
 	// Parse flags first, passing gpuInfo
-	genMode, debugMode, forceReparse, trackAll, importMode, cpuMode, gpuMode, extractMode, profiling := setupFlags(gpuInfo)
-	constants.GeneratorMode = *genMode
-	constants.TrackAllAddresses = *trackAll
+	config := setupFlags(gpuInfo)
+	constants.GeneratorMode = config.GenMode
+	constants.TrackAllAddresses = config.TrackAll
 
 	fmt.Print("\033[H\033[2J\n")
 	logger.Banner()
 
 	// Set profiling mode
-	parser.EnableProfiling = *profiling
+	parser.EnableProfiling = config.Profiling
 	if parser.EnableProfiling {
 		logger.LogStatus(localLog, constants.LogInfo,
-			"Profiling enabled - writing to cpu_profile.pprof")
+			"Profiling enabled - writing to cpu.pprof and memory.pprof")
+		
+		// CPU Profile
+		cpuf, err := os.Create("cpu.pprof")
+		if err != nil {
+			logger.LogError(localLog, constants.LogError, err, "Could not create CPU profile")
+			os.Exit(1)
+		}
+		pprof.StartCPUProfile(cpuf)
 		defer pprof.StopCPUProfile()
+
+		// Memory Profile (written on exit)
+		defer func() {
+			memf, err := os.Create("memory.pprof")
+			if err != nil {
+				logger.LogError(localLog, constants.LogError, err, "Could not create memory profile")
+				return
+			}
+			defer memf.Close()
+			pprof.WriteHeapProfile(memf)
+		}()
 	}
 
 	// Set debug mode early if enabled
-	if *debugMode {
+	if config.DebugMode {
 		constants.DebugMode = true
 		logger.LogStatus(localLog, constants.LogDebug, "Debug mode enabled")
 	}
 
 	// Handle import mode
-	if *importMode {
+	if config.ImportMode {
 		logger.LogStatus(localLog, constants.LogInfo, "* Re-import all addresses! *")
-		*forceReparse = true // Force reparse when importing
+		config.ForceReparse = true // Force reparse when importing
 	}
 
 	// Check arguments after parsing flags
@@ -70,7 +89,7 @@ func main() {
 	}
 
 	// IMPORTER
-	if *importMode {
+	if config.ImportMode {
 		if err := runtime.HandleImport(localLog); err != nil {
 			logger.LogError(localLog, constants.LogError, err, "Import failed")
 			os.Exit(1)
@@ -79,7 +98,7 @@ func main() {
 	}
 
 	// EXTRACTOR
-	if *extractMode {
+	if config.ExtractMode {
 		if err := parser.ExtractAddresses(); err != nil {
 			logger.LogError(localLog, constants.LogError, err, "Import failed")
 			os.Exit(1)
@@ -90,19 +109,19 @@ func main() {
 	// Show all our settings with a clean output
 	logger.LogHeaderStatus(localLog, constants.LogInfo,
 		"Generator: %-10v Track All:  %-10v",
-		utils.BoolToEnabledDisabled(*genMode),
-		utils.BoolToEnabledDisabled(*trackAll))
+		utils.BoolToEnabledDisabled(config.GenMode),
+		utils.BoolToEnabledDisabled(config.TrackAll))
 	logger.LogStatus(localLog, constants.LogInfo,
 		"Reparse:   %-10v GPU Mode:   %-10v",
-		utils.BoolToEnabledDisabled(*forceReparse),
-		utils.BoolToEnabledDisabled(*gpuMode))
+		utils.BoolToEnabledDisabled(config.ForceReparse),
+		utils.BoolToEnabledDisabled(config.GPUMode))
 	logger.LogStatus(localLog, constants.LogInfo,
 		"DebugMode: %-10v CPU Mode:   %-10v",
-		utils.BoolToEnabledDisabled(*debugMode),
-		utils.BoolToEnabledDisabled(*cpuMode))
+		utils.BoolToEnabledDisabled(config.DebugMode),
+		utils.BoolToEnabledDisabled(config.CPUMode))
 
 	// If GPU is available and we're using GPU mode, run CUDA test
-	if gpuInfo.Available && *gpuMode {
+	if gpuInfo.Available && config.GPUMode {
 
 		// Create temporary CUDA generator just for testing
 		testGen, err := gpu.NewCUDAGenerator(&generator.Config{})
@@ -122,7 +141,7 @@ func main() {
 	var wg sync.WaitGroup
 
 	// If forceReparse is true, delete the existing database
-	if *forceReparse {
+	if config.ForceReparse {
 		dbPath := filepath.Join(utils.GetBaseDir(), constants.AddressDBPath)
 		if err := os.RemoveAll(dbPath); err != nil {
 			logger.LogError(localLog, constants.LogError, err, "Failed to delete existing database")
@@ -133,9 +152,9 @@ func main() {
 		logger.LogStatus(localLog, constants.LogDB, "Removed existing database")
 	}
 
-	ctx, generatorInstance, err := runtime.Initialize(*genMode,
-		*debugMode, *forceReparse,
-		gpuInfo, *cpuMode, *gpuMode)
+	ctx, generatorInstance, err := runtime.Initialize(config.GenMode,
+		config.DebugMode, config.ForceReparse,
+		gpuInfo, config.CPUMode, config.GPUMode)
 
 	if err != nil {
 		if generatorInstance != nil {
@@ -167,7 +186,7 @@ func main() {
 			logger.LogError(localLog, constants.LogError, err,
 				"Failed to load addresses but continuing...")
 		} else {
-			logger.LogStatus(localLog, constants.LogInfo,
+			logger.LogHeaderStatus(localLog, constants.LogInfo,
 				"Loaded %s addresses (from Blockchain)",
 				utils.FormatWithCommas(int(count)))
 			ctx.AddressesLoaded = true
@@ -252,17 +271,31 @@ func runMainLoop(ctx *runtime.AppContext) {
 	}
 }
 
-func setupFlags(gpuInfo gpu.GPUInfo) (*bool,
-	*bool, *bool, *bool, *bool, *bool, *bool, *bool, *bool) {
-	genMode := flag.Bool("gen", true, "Generate new addresses (default)")
-	debugMode := flag.Bool("debug", false, "Enable debug mode")
-	forceReparse := flag.Bool("force", false, "Force reparse of all blocks")
-	trackAll := flag.Bool("track-all", true, "Track all addresses (default)")
-	extractMode := flag.Bool("extract", false, "Extract all addresses from db")
-	importMode := flag.Bool("import", false, "Re-import all addresses")
-	profiling := flag.Bool("profile", false, "Enable Profiling")
-	cpuMode := flag.Bool("cpu", false, "Force CPU mode for testing")
-	gpuMode := flag.Bool("gpu", false, "Force GPU mode for testing")
+// RuntimeConfig holds all configuration options for the application
+type RuntimeConfig struct {
+	GenMode      bool // Generate new addresses
+	DebugMode    bool // Enable debug mode
+	ForceReparse bool // Force reparse of all blocks
+	TrackAll     bool // Track all addresses
+	ExtractMode  bool // Extract all addresses from db
+	ImportMode   bool // Re-import all addresses
+	Profiling    bool // Enable profiling
+	CPUMode      bool // Force CPU mode
+	GPUMode      bool // Force GPU mode
+}
+
+func setupFlags(gpuInfo gpu.GPUInfo) *RuntimeConfig {
+	config := &RuntimeConfig{}
+
+	flag.BoolVar(&config.GenMode, "gen", true, "Generate new addresses (default)")
+	flag.BoolVar(&config.DebugMode, "debug", false, "Enable debug mode")
+	flag.BoolVar(&config.ForceReparse, "force", false, "Force reparse of all blocks")
+	flag.BoolVar(&config.TrackAll, "track-all", true, "Track all addresses (default)")
+	flag.BoolVar(&config.ExtractMode, "extract", false, "Extract all addresses from db")
+	flag.BoolVar(&config.ImportMode, "import", false, "Re-import all addresses")
+	flag.BoolVar(&config.Profiling, "profile", false, "Enable Profiling")
+	flag.BoolVar(&config.CPUMode, "cpu", false, "Force CPU mode for testing")
+	flag.BoolVar(&config.GPUMode, "gpu", false, "Force GPU mode for testing")
 	benchMode := flag.Bool("bench", false, "Run benchmark mode")
 
 	flag.Usage = func() {
@@ -288,14 +321,13 @@ func setupFlags(gpuInfo gpu.GPUInfo) (*bool,
 	}
 
 	// Automatically check for GPU if neither CPU nor GPU mode is explicitly specified
-	if !*cpuMode && !*gpuMode {
+	if !config.CPUMode && !config.GPUMode {
 		if gpuInfo.Available && gpuInfo.UsingCUDA {
-			*gpuMode = true
+			config.GPUMode = true
 		} else {
-			*cpuMode = true
+			config.CPUMode = true
 		}
 	}
 
-	return genMode, debugMode, forceReparse,
-		trackAll, importMode, cpuMode, gpuMode, extractMode, profiling
+	return config
 }

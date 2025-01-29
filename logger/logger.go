@@ -145,8 +145,8 @@ func logWithTypeChange(logger *log.Logger, logType string, message string) {
 	// Increment counter first
 	lineCounter++
 
-	// Print header when type changes or every 42 lines
-	if lastLogType != logType || lineCounter >= 42 {
+	// Print header when type changes or every 20 lines
+	if lastLogType != logType || lineCounter >= 20 {
 		var header string
 		switch logType {
 		case constants.LogDB, constants.LogStats:
@@ -155,8 +155,7 @@ func logWithTypeChange(logger *log.Logger, logType string, message string) {
 			header = HeaderBlock
 		}
 
-		// Only print header if it's different from current header
-		if header != "" && header != currentHeader {
+		if header != "" {
 			PrintSeparator(constants.LogHeader)
 			logger.Printf("%s %s", constants.LogHeader, header)
 			PrintSeparator(constants.LogHeader)

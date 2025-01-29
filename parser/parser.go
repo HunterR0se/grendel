@@ -45,18 +45,19 @@ var (
 	profileOnce     sync.Once // Ensure we only create one profile
 )
 
-// Optimized CheckAddressBatch in parser/parser.go
+// Optimized CheckAddressBatch
 func (p *Parser) CheckAddressBatch(addresses []string, results []bool, balances []int64) {
 	// Pre-check array sizes
 	if len(addresses) != len(results) || len(addresses) != len(balances) {
 		return
 	}
 
+	// Single read lock for entire batch
 	p.addressMutex.RLock()
 	defer p.addressMutex.RUnlock()
 
-	// Process in chunks for better cache utilization
-	const chunkSize = 256
+	// Process in cache-friendly chunks
+	const chunkSize = 256 // Tuned for typical L1 cache size
 	for i := 0; i < len(addresses); i += chunkSize {
 		end := i + chunkSize
 		if end > len(addresses) {
@@ -65,12 +66,12 @@ func (p *Parser) CheckAddressBatch(addresses []string, results []bool, balances 
 
 		// Pre-calculate hashes for the chunk
 		hashes := make([]uint64, end-i)
-		for j := 0; j < len(hashes); j++ {
+		for j := range hashes {
 			hashes[j] = fastHash(addresses[i+j])
 		}
 
-		// Check chunk of addresses using pre-calculated hashes
-		for j := 0; j < len(hashes); j++ {
+		// Check addresses using pre-calculated hashes
+		for j := range hashes {
 			if balance, exists := p.addresses[hashes[j]]; exists {
 				results[i+j] = true
 				balances[i+j] = int64(balance)
@@ -79,15 +80,52 @@ func (p *Parser) CheckAddressBatch(addresses []string, results []bool, balances 
 	}
 }
 
-// Optimized fastHash function
+// Optimized fastHash - uses xxHash algorithm for better performance
 func fastHash(s string) uint64 {
-	// Use xxHash for better performance
-	var h uint64 = 14695981039346656037
-	for i := 0; i < len(s); i++ {
-		h ^= uint64(s[i])
-		h *= 1099511628211
+	// xxHash constants
+	const (
+		prime1 = 11400714785074694791
+		prime2 = 14029467366897019727
+		prime3 = 1609587929392839161
+		prime4 = 9650029242287828579
+		prime5 = 2870177450012600261
+	)
+
+	var h64 uint64 = prime5
+	data := []byte(s)
+	i := 0
+
+	// Process 8 bytes at a time
+	for ; i+8 <= len(data); i += 8 {
+		k1 := uint64(data[i]) | uint64(data[i+1])<<8 |
+			uint64(data[i+2])<<16 | uint64(data[i+3])<<24 |
+			uint64(data[i+4])<<32 | uint64(data[i+5])<<40 |
+			uint64(data[i+6])<<48 | uint64(data[i+7])<<56
+
+		k1 *= prime2
+		k1 = (k1 << 31) | (k1 >> 33)
+		k1 *= prime1
+
+		h64 ^= k1
+		h64 = (h64 << 27) | (h64 >> 37)
+		h64 = h64*prime1 + prime4
 	}
-	return h
+
+	// Process remaining bytes
+	for ; i < len(data); i++ {
+		h64 ^= uint64(data[i])
+		h64 = (h64 << 23) | (h64 >> 41)
+		h64 *= prime2
+		h64 ^= prime3
+	}
+
+	// Final mix
+	h64 ^= uint64(len(data))
+	h64 = (h64 ^ (h64 >> 33)) * prime2
+	h64 = (h64 ^ (h64 >> 29)) * prime3
+	h64 = h64 ^ (h64 >> 32)
+
+	return h64
 }
 
 // Optimized CheckAddress for single lookups
@@ -148,17 +186,6 @@ func (p *Parser) GetAddresses() []string {
 		}
 	}
 
-	return addresses
-}
-
-func (p *Parser) _GetAddresses() []string {
-	p.addressMutex.RLock()
-	addresses := make([]string, 0, len(p.addresses))
-	// Just return the hashed keys since that's what we use for matching
-	for hash := range p.addresses {
-		addresses = append(addresses, fmt.Sprintf("%x", hash))
-	}
-	p.addressMutex.RUnlock()
 	return addresses
 }
 
@@ -327,9 +354,11 @@ func (p *Parser) CountAddresses() (uint64, error) {
 
 // ----------------- ADDRESS LOADING -----------------------
 
-// Optimized LoadAllAddresses
+// Optimized LoadAllAddresses with better memory management and performance
 func (p *Parser) LoadAllAddresses() (uint64, error) {
-	// Pre-allocate map with capacity estimate
+	startTime := time.Now()
+
+	// Pre-allocate map with better capacity planning
 	const mapLoadFactor = 0.75
 	initialCapacity := uint64(float64(p.AddressCount) / mapLoadFactor)
 
@@ -337,8 +366,8 @@ func (p *Parser) LoadAllAddresses() (uint64, error) {
 	p.addresses = make(map[uint64]uint64, initialCapacity)
 	p.addressMutex.Unlock()
 
-	// Use batched reading for better performance
-	const batchSize = 100_000
+	// Use larger batch size for better throughput
+	var batchSize = constants.ImportBatchSize
 	batch := make([]struct {
 		hash    uint64
 		balance uint64
@@ -349,8 +378,10 @@ func (p *Parser) LoadAllAddresses() (uint64, error) {
 
 	prefix := []byte("addr:")
 	count := uint64(0)
+	lastLogTime := time.Now()
+	var lastCount uint64
 
-	// Process in batches
+	// Process in batches for better memory efficiency
 	for iter.Next() {
 		key := iter.Key()
 		if len(key) <= 5 || !bytes.Equal(key[:5], prefix) {
@@ -368,7 +399,7 @@ func (p *Parser) LoadAllAddresses() (uint64, error) {
 			balance: balance,
 		})
 
-		// When batch is full, bulk insert
+		// Bulk insert when batch is full
 		if len(batch) >= batchSize {
 			p.addressMutex.Lock()
 			for _, item := range batch {
@@ -377,17 +408,25 @@ func (p *Parser) LoadAllAddresses() (uint64, error) {
 			}
 			p.addressMutex.Unlock()
 			batch = batch[:0]
-		}
 
-		// Log progress periodically
-		if count%1_000_000 == 0 && constants.DebugMode {
-			logger.LogDebug(p.Logger, constants.LogDB,
-				"Loaded %s addresses...",
-				utils.FormatWithCommas(int(count)))
+			// Log progress with rate calculation every 5 seconds
+			if time.Since(lastLogTime) >= 5*time.Second {
+				rate := float64(count-lastCount) / time.Since(lastLogTime).Seconds()
+				progress := float64(count) / float64(p.AddressCount) * 100
+
+				logger.LogStatus(p.Logger, constants.LogDB,
+					"%11s addresses (%4.1f%%) at %8.0f/sec",
+					utils.FormatWithCommas(int(count)),
+					progress,
+					rate)
+
+				lastCount = count
+				lastLogTime = time.Now()
+			}
 		}
 	}
 
-	// Insert any remaining addresses
+	// Process remaining addresses
 	if len(batch) > 0 {
 		p.addressMutex.Lock()
 		for _, item := range batch {
@@ -408,56 +447,105 @@ func (p *Parser) LoadAllAddresses() (uint64, error) {
 			p.AddressCount, count)
 	}
 
+	elapsed := time.Since(startTime)
+	rate := float64(count) / elapsed.Seconds()
+
+	logger.LogDebug(p.Logger, constants.LogLoaded,
+		"Loaded %s addresses in %.1f seconds (%.0f/sec)",
+		utils.FormatWithCommas(int(count)),
+		elapsed.Seconds(),
+		rate)
+
 	return count, nil
 }
 
 // Optimized VerifyStats
 func (p *Parser) VerifyStats() {
-	const verifyBatchSize = 100_000
-
 	iter := p.DB.NewIterator(nil, nil)
 	defer iter.Release()
 
 	totalCount := uint64(0)
 	prefix := []byte("addr:")
-
-	// Use batched verification
-	batch := 0
 	startTime := time.Now()
+	lastLogTime := time.Now()
+	var lastCount uint64
+
+	// Keep track of address types for verification
+	stats := &constants.AddressCategory{}
 
 	for iter.Next() {
 		key := iter.Key()
 		if len(key) > 5 && bytes.Equal(key[:5], prefix) {
+			addr := string(key[5:])
+			addresses.CategorizeAddress(addr, stats)
 			totalCount++
-			batch++
 
-			if batch >= verifyBatchSize {
-				if constants.DebugMode {
-					rate := float64(totalCount) / time.Since(startTime).Seconds()
-					logger.LogDebug(p.Logger, constants.LogDB,
-						"Verified %s addresses (%.0f/sec)",
+			// Log progress with rate calculation
+			if totalCount%uint64(constants.AddressCheckerBatchSize) == 0 {
+				now := time.Now()
+				if now.Sub(lastLogTime) >= 5*time.Second {
+					rate := float64(totalCount-lastCount) / now.Sub(lastLogTime).Seconds()
+					memStats := utils.GetMemStats()
+
+					logger.LogStatus(p.Logger, constants.LogDB,
+						"Verified %11s (%8.0f/sec) %.1f GB",
 						utils.FormatWithCommas(int(totalCount)),
-						rate)
+						rate,
+						memStats.AllocatedGB)
+
+					lastCount = totalCount
+					lastLogTime = now
 				}
-				batch = 0
 			}
 		}
 	}
 
-	if totalCount != p.AddressCount {
-		logger.LogStatus(p.Logger, constants.LogWarn,
-			"Address count mismatch: DB=%d, Stats=%d",
-			totalCount, p.AddressCount)
+	if err := iter.Error(); err != nil {
+		logger.LogError(p.Logger, constants.LogError, err,
+			"Error during stats verification")
+		return
+	}
 
-		// Force recount only if significant difference
-		if math.Abs(float64(totalCount)-float64(p.AddressCount)) >
-			float64(p.AddressCount)*0.01 {
+	// Check for significant discrepancy
+	if totalCount != p.AddressCount {
+		discrepancy := math.Abs(float64(totalCount) - float64(p.AddressCount))
+		percentDiff := (discrepancy / float64(p.AddressCount)) * 100
+
+		logger.LogStatus(p.Logger, constants.LogWarn,
+			"Address count mismatch: DB=%s, Stats=%s (%.1f%% difference)",
+			utils.FormatWithCommas(int(totalCount)),
+			utils.FormatWithCommas(int(p.AddressCount)),
+			percentDiff)
+
+		// Force recount if difference is significant (>1%)
+		if percentDiff > 1.0 {
+			logger.LogStatus(p.Logger, constants.LogWarn,
+				"Significant count mismatch detected, triggering reload")
 			p.LoadAllAddresses()
 		}
 	}
 
-	// Update verification timestamp
-	p.lastUpdateTime = time.Now()
+	// Update global stats atomically
+	constants.GlobalStats.Lock()
+	constants.GlobalStats.LegacyCount = int64(stats.LegacyCount)
+	constants.GlobalStats.SegwitCount = int64(stats.SegwitCount)
+	constants.GlobalStats.NativeCount = int64(stats.NativeCount)
+	constants.GlobalStats.WScriptCount = int64(stats.WScriptCount)
+	constants.GlobalStats.TotalCount = constants.GlobalStats.LegacyCount +
+		constants.GlobalStats.SegwitCount +
+		constants.GlobalStats.NativeCount +
+		constants.GlobalStats.WScriptCount
+	constants.GlobalStats.LastUpdated = time.Now()
+	constants.GlobalStats.Unlock()
+
+	elapsed := time.Since(startTime)
+	rate := float64(totalCount) / elapsed.Seconds()
+
+	logger.LogHeaderStatus(p.Logger, constants.LogDB,
+		"* %s addresses %.1f secs (%.0f/sec)",
+		utils.FormatWithCommas(int(totalCount)),
+		elapsed.Seconds(),
+		rate)
 }
 
 // ----------------- OVERRIDES ------------------------------

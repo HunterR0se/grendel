@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/shirou/gopsutil/mem"
 )
 
 // Required for bitcoin new nodes - from debug.log
@@ -46,13 +48,17 @@ var (
 
 // Specific to threads, memory management and processing
 var (
-	NumWorkers              = runtime.NumCPU() * 2 // 4x CPU
-	RNGPoolSize             = 1024 * 1024          // 250_000
-	ChannelBuffer           = 8 * 1024 * 1024      // 40_000
-	MaxBlockFiles           = 1_000_000            // 1_000_000
-	ImportBatchSize         = 500_000              // 500_000
-	ImportLogInterval       = 60 * time.Second     // Every 90 seconds
-	AddressCheckerBatchSize = 500_000              // new AddressCheckerBatchSize
+	NumWorkers        = runtime.NumCPU() * 2 // 4x CPU
+	RNGPoolSize       = 1024 * 1024          // 250_000
+	ChannelBuffer     = 8 * 1024 * 1024      // 40_000
+	MaxBlockFiles     = 1_000_000            // 1_000_000
+	ImportBatchSize   = 500_000              // 500_000
+	ImportLogInterval = 60 * time.Second     // Every 90 seconds
+	// AddressCheckerBatchSize = 500_000              // new AddressCheckerBatchSize
+)
+
+var (
+	AddressCheckerBatchSize = calculateOptimalBatchSize() // Dynamic sizing
 )
 
 // Initial map capacities based on typical Bitcoin node data
@@ -150,7 +156,39 @@ var (
 )
 
 // Helper functions
-//
+func calculateOptimalBatchSize() int {
+	v, _ := mem.VirtualMemory()
+	if v == nil {
+		return 500_000 // fallback to minimum if memory check fails
+	}
+
+	availableRAM := float64(v.Available)
+
+	// Use 20% of available memory for batch operations
+	// Each address takes approximately 43 bytes
+	batchMemory := availableRAM * 0.20   // 20% of available memory in bytes
+	optimalSize := int(batchMemory / 43) // Divide by bytes per address
+
+	// Clamp between reasonable min/max values
+	minBatch := 500_000    // Minimum 500k addresses per batch
+	maxBatch := 20_000_000 // Maximum 20M addresses per batch
+
+	if optimalSize < minBatch {
+		optimalSize = minBatch
+	}
+	if optimalSize > maxBatch {
+		optimalSize = maxBatch
+	}
+
+	// Log the calculated batch size in a clean format
+	if Logger != nil {
+		Logger.Printf("%s Batch Size: %d addresses",
+			LogInfo,
+			optimalSize)
+	}
+
+	return optimalSize
+}
 
 // Add helper functions to update stats
 // Helper functions to update stats
