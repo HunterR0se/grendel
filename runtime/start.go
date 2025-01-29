@@ -24,19 +24,18 @@ type workerPool struct {
 
 func setupWorkerPool(ctx *AppContext) *workerPool {
 	pool := &workerPool{
-		// Use constants for buffer size
 		workChan: make(chan *WalletInfo, constants.ChannelBuffer),
+		// done:     make(chan struct{}), // Initialize done channel
 	}
 
-	// Use the constant for number of workers
 	numWorkers := constants.NumWorkers
 	pool.wg.Add(numWorkers)
 
 	for i := 0; i < numWorkers; i++ {
-		workerID := i // Capture the loop variable
+		workerID := i
 		go func() {
+			defer pool.wg.Done()
 			pool.startWorker(ctx, workerID)
-			pool.wg.Done()
 		}()
 	}
 
@@ -63,36 +62,53 @@ func (p *workerPool) startWorker(ctx *AppContext, workerID int) {
 			"Worker %d started", workerID)
 	}
 
-	for addr := range p.workChan {
-		batch = append(batch, addr)
-		addresses = append(addresses, addr.Address)
-
-		// Process when batch is full
-		if len(batch) >= constants.AddressCheckerBatchSize {
+	for {
+		select {
+		case <-ctx.ShutdownChan: // Add shutdown check
+			if len(batch) > 0 {
+				if constants.DebugMode && ctx.LocalLog != nil {
+					logger.LogDebug(ctx.LocalLog, constants.LogInfo,
+						"Worker %d processing final batch before shutdown", workerID)
+				}
+				p.processAddressBatch(ctx, batch, addresses)
+			}
 			if constants.DebugMode && ctx.LocalLog != nil {
 				logger.LogDebug(ctx.LocalLog, constants.LogInfo,
-					"Worker %d processing batch of %d addresses",
-					workerID, len(batch))
+					"Worker %d shutting down from shutdown signal", workerID)
 			}
-			p.processAddressBatch(ctx, batch, addresses)
-			batch = batch[:0]
-			addresses = addresses[:0]
-		}
-	}
+			return
 
-	// Process any remaining addresses
-	if len(batch) > 0 {
-		if constants.DebugMode && ctx.LocalLog != nil {
-			logger.LogDebug(ctx.LocalLog, constants.LogInfo,
-				"Worker %d processing final batch of %d addresses",
-				workerID, len(batch))
-		}
-		p.processAddressBatch(ctx, batch, addresses)
-	}
+		case addr, ok := <-p.workChan:
+			if !ok {
+				if len(batch) > 0 {
+					if constants.DebugMode && ctx.LocalLog != nil {
+						logger.LogDebug(ctx.LocalLog, constants.LogInfo,
+							"Worker %d processing final batch on channel close", workerID)
+					}
+					p.processAddressBatch(ctx, batch, addresses)
+				}
+				if constants.DebugMode && ctx.LocalLog != nil {
+					logger.LogDebug(ctx.LocalLog, constants.LogInfo,
+						"Worker %d shutting down from channel close", workerID)
+				}
+				return
+			}
 
-	if constants.DebugMode && ctx.LocalLog != nil {
-		logger.LogDebug(ctx.LocalLog, constants.LogInfo,
-			"Worker %d shutting down", workerID)
+			batch = append(batch, addr)
+			addresses = append(addresses, addr.Address)
+
+			// Process when batch is full
+			if len(batch) >= constants.AddressCheckerBatchSize {
+				if constants.DebugMode && ctx.LocalLog != nil {
+					logger.LogDebug(ctx.LocalLog, constants.LogInfo,
+						"Worker %d processing batch of %d addresses",
+						workerID, len(batch))
+				}
+				p.processAddressBatch(ctx, batch, addresses)
+				batch = batch[:0]
+				addresses = addresses[:0]
+			}
+		}
 	}
 }
 

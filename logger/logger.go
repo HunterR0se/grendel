@@ -58,7 +58,7 @@ func PrintSeparator(logType string) {
 func Banner() {
 	fmt.Printf(`
 
-   ________                          .___     .__           🛠️ Build 106 🛠️
+   ________                          .___     .__           🛠️ Build 107 🛠️
   /  _____/______   ____   ____    __| _/____ |  |  🕹️ CUDA Acceleration 🕹️
  /   \  __\_  __ \_/ __ \ /    \  / __ |/ __ \|  |  Updated Jan 29, 2025 ⏱️
  \    \_\  \  | \/\  ___/|   |  \/ /_/ \  ___/|  |__
