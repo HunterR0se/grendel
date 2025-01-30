@@ -10,8 +10,15 @@ import (
 	"github.com/shirou/gopsutil/mem"
 )
 
-// Required for bitcoin new nodes - from debug.log
-// var ObfuscationKey = []byte{0x7b, 0xc9, 0x9d, 0x89, 0xa8, 0x96, 0x4a, 0xdb}
+func init() {
+	// Sanity check buffer sizes
+	if ChannelBuffer > 10_000_000 {
+		log.Printf("Warning: Large channel buffer size: %d", ChannelBuffer)
+	}
+	if AddressCheckerBatchSize > 25_000_000 {
+		log.Printf("Warning: Large batch size: %d", AddressCheckerBatchSize)
+	}
+}
 
 // ObfuscationKey is the global variable holding the obfuscation key
 var ObfuscationKey []byte
@@ -28,33 +35,33 @@ var (
 )
 
 const (
-	MinBufferSize = 512 * 1024 * 1024      // 128 * 1024 * 1024
-	MaxBufferSize = 8 * 1024 * 1024 * 1024 // 1024 * 1024 * 1024
-	MemoryTarget  = 0.95                   // Use x% of available memory
+	MinBufferSize = 256 * 1024 * 1024      // Reduced from 512MB to 256MB
+	MaxBufferSize = 4 * 1024 * 1024 * 1024 // Reduced from 8GB to 4GB
+	MemoryTarget  = 0.70                   // Reduced from 0.95 to 0.70 (70% of available memory)
 )
 
-// Memory allocation proportions
+// Memory allocation proportions - adjusted for better balance
 const (
-	BlockCacheProportion     = 0.70 // 60% of target memory
-	WriteBufferProportion    = 0.20 // 25% of target memory
-	CompactionSizeProportion = 0.10 // 15% of target memory
+	BlockCacheProportion     = 0.50 // Reduced from 0.70 to 0.50 (50% of target memory)
+	WriteBufferProportion    = 0.15 // Reduced from 0.20 to 0.15 (15% of target memory)
+	CompactionSizeProportion = 0.05 // Reduced from 0.10 to 0.05 (5% of target memory)
 )
 
+// Reduce batch and buffer sizes
 var (
-	GPULocalBufferSize = 4096      // local size of GPU specific buffers
-	GPUBatchBufferSize = 1_000_000 // 256 * 1024 // BATCH_SIZE 64M
-	GPUTestAddresses   = 5_000_000 // total addresses for testing
+	GPULocalBufferSize = 4096      // Keep as is
+	GPUBatchBufferSize = 500_000   // Reduced from 1M to 500k
+	GPUTestAddresses   = 1_000_000 // Reduced from 5M to 1M
 )
 
 // Specific to threads, memory management and processing
 var (
-	NumWorkers        = runtime.NumCPU() * 2 // 4x CPU
-	RNGPoolSize       = 1024 * 1024          // 250_000
-	ChannelBuffer     = 8 * 1024 * 1024      // 40_000
-	MaxBlockFiles     = 1_000_000            // 1_000_000
-	ImportBatchSize   = 500_000              // 500_000
-	ImportLogInterval = 60 * time.Second     // Every 90 seconds
-	// AddressCheckerBatchSize = 500_000              // new AddressCheckerBatchSize
+	NumWorkers        = runtime.NumCPU() // Reduced from 2x to 1x CPU
+	RNGPoolSize       = 256 * 1024       // Reduced from 1M to 256k
+	ChannelBuffer     = 2 * 1024 * 1024  // Reduced from 8M to 2M
+	MaxBlockFiles     = 500_000          // Reduced from 1M to 500k
+	ImportBatchSize   = 250_000          // Reduced from 500k to 250k
+	ImportLogInterval = 60 * time.Second // Keep as is
 )
 
 var (
@@ -155,36 +162,29 @@ var (
 	}
 )
 
-// Helper functions
+// Modify calculateOptimalBatchSize() to be more conservative
 func calculateOptimalBatchSize() int {
 	v, _ := mem.VirtualMemory()
 	if v == nil {
-		return 500_000 // fallback to minimum if memory check fails
+		return 250_000 // reduced fallback value
 	}
 
 	availableRAM := float64(v.Available)
 
-	// Use 20% of available memory for batch operations
+	// Use 15% of available memory for batch operations (reduced from 20%)
 	// Each address takes approximately 43 bytes
-	batchMemory := availableRAM * 0.20   // 20% of available memory in bytes
-	optimalSize := int(batchMemory / 43) // Divide by bytes per address
+	batchMemory := availableRAM * 0.15
+	optimalSize := int(batchMemory / 43)
 
-	// Clamp between reasonable min/max values
-	minBatch := 500_000    // Minimum 500k addresses per batch
-	maxBatch := 20_000_000 // Maximum 20M addresses per batch
+	// More conservative min/max values
+	minBatch := 250_000   // Reduced from 500k
+	maxBatch := 5_000_000 // Reduced from 20M to 5M
 
 	if optimalSize < minBatch {
 		optimalSize = minBatch
 	}
 	if optimalSize > maxBatch {
 		optimalSize = maxBatch
-	}
-
-	// Log the calculated batch size in a clean format
-	if Logger != nil {
-		Logger.Printf("%s Batch Size: %d addresses",
-			LogInfo,
-			optimalSize)
 	}
 
 	return optimalSize

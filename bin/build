@@ -76,7 +76,7 @@ if ! go mod tidy; then
     exit 1
 fi
 
-# Create tag name before using it
+# Check for release mode and prepare tag
 TAG_FILE=".last_tag"
 if [ "$MODE" == "release" ]; then
     if [ ! -f "$TAG_FILE" ]; then
@@ -90,12 +90,6 @@ if [ "$MODE" == "release" ]; then
         exit 1
     fi
     TAG_NAME=$((LAST_TAG + 1))
-
-    # Save the new tag number only in release mode
-    if ! echo "$TAG_NAME" > "$TAG_FILE"; then
-        echo -e "${RED}❌ Failed to write to tag file${NC}"
-        exit 1
-    fi
 
     # Update banner date in logger.go before building
     echo -e "${BLUE}📅 Updating banner date...${NC}"
@@ -190,12 +184,27 @@ else
     echo -e "${GREEN}✅ Built binary without CUDA support${NC}"
 fi
 
-
 # Get binary size
 BINARY_SIZE=$(find "$BUILD_DIR" -name "$BINARY_NAME" -printf "%s" | numfmt --to=iec-i --suffix=B)
 echo -e "${GREEN}✅ Build successful! Binary size: ${BINARY_SIZE}${NC}"
 
+# Deploy to remote server
+echo -e "${BLUE}📤 Deploying to ${REMOTE_SERVER}...${NC}"
+if ! scp "$BUILD_DIR/$BINARY_NAME" "${REMOTE_SERVER}:${REMOTE_PATH}" >/dev/null 2>&1; then
+    echo -e "${RED}❌ Deployment failed${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Deployment successful!${NC}"
+
+# Now handle Git operations after all builds are complete
 if [ "$MODE" == "release" ]; then
+    # Save the new tag number
+    if ! echo "$TAG_NAME" > "$TAG_FILE"; then
+        echo -e "${RED}❌ Failed to write to tag file${NC}"
+        exit 1
+    fi
+
     # Prompt for change description
     echo -e "${RED}📝 Enter a description of the changes (press Enter when done):${NC}"
     echo -n "(msg) ~ "
@@ -231,27 +240,8 @@ if [ "$MODE" == "release" ]; then
     fi
 
     echo -e "${GREEN}✅ Tag created and pushed!${NC}"
-fi
 
-# Deploy to remote server
-echo -e "${BLUE}📤 Deploying to ${REMOTE_SERVER}...${NC}"
-if ! scp "$BUILD_DIR/$BINARY_NAME" "${REMOTE_SERVER}:${REMOTE_PATH}" >/dev/null 2>&1; then
-    echo -e "${RED}❌ Deployment failed${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}✅ Deployment successful!${NC}"
-
-# Cleanup local binary only if not in release mode
-if [ "$MODE" != "release" ]; then
-    echo -e "${YELLOW}🧹 Cleaning up local binary...${NC}"
-    if ! rm "$BUILD_DIR/$BINARY_NAME"; then
-        echo -e "${RED}⚠️  Failed to remove local binary${NC}"
-    else
-        echo -e "${GREEN}✅ Local binary cleaned up${NC}"
-    fi
-else
-    # In release mode, copy libkeygen.so to bin directory
+    # Copy libkeygen.so to bin directory for release
     echo -e "${BLUE}📦 Copying libkeygen.so to bin directory...${NC}"
     if ! cp /usr/local/lib/libkeygen.so "$BUILD_DIR/"; then
         echo -e "${RED}⚠️  Failed to copy libkeygen.so to bin directory${NC}"
@@ -260,6 +250,14 @@ else
     fi
 
     echo -e "${GREEN}✅ Release artifacts saved in bin directory${NC}"
+else
+    # Cleanup local binary only if not in release mode
+    echo -e "${YELLOW}🧹 Cleaning up local binary...${NC}"
+    if ! rm "$BUILD_DIR/$BINARY_NAME"; then
+        echo -e "${RED}⚠️  Failed to remove local binary${NC}"
+    else
+        echo -e "${GREEN}✅ Local binary cleaned up${NC}"
+    fi
 fi
 
 echo -e "${GREEN}🎉 Build and deploy completed!${NC}"

@@ -181,7 +181,7 @@ Typically, `top 10` is the best place to start.
 2. **Install Basic Tools:**
 
     ```bash
-    apt install git vim zsh tmux
+    apt install git vim zsh tmux rsync
     ```
 
 3. **Configure Zsh as Default Shell:**

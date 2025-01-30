@@ -20,24 +20,34 @@ type checkerState struct {
 type workerPool struct {
 	workChan chan *WalletInfo
 	wg       sync.WaitGroup
+	done     chan struct{} // Add done channel for clean shutdown
 }
 
 func setupWorkerPool(ctx *AppContext) *workerPool {
 	pool := &workerPool{
 		workChan: make(chan *WalletInfo, constants.ChannelBuffer),
-		// done:     make(chan struct{}), // Initialize done channel
+		done:     make(chan struct{}), // Initialize done channel
 	}
 
 	numWorkers := constants.NumWorkers
 	pool.wg.Add(numWorkers)
 
 	for i := 0; i < numWorkers; i++ {
-		workerID := i
 		go func() {
 			defer pool.wg.Done()
-			pool.startWorker(ctx, workerID)
+			pool.startWorker(ctx)
 		}()
 	}
+
+	// Add shutdown goroutine
+	go func() {
+		select {
+		case <-ctx.ShutdownChan:
+			close(pool.done)     // Signal workers to stop
+			pool.wg.Wait()       // Wait for workers to finish
+			close(pool.workChan) // Safe to close work channel
+		}
+	}()
 
 	logger.LogHeaderStatus(ctx.LocalLog, constants.LogInfo,
 		"* Pool - %d (workers) %s (buffer)",
@@ -53,58 +63,32 @@ var addressBatchPool = sync.Pool{
 	},
 }
 
-func (p *workerPool) startWorker(ctx *AppContext, workerID int) {
+func (p *workerPool) startWorker(ctx *AppContext) {
 	batch := make([]*WalletInfo, 0, constants.AddressCheckerBatchSize)
 	addresses := make([]string, 0, constants.AddressCheckerBatchSize)
-
-	if constants.DebugMode && ctx.LocalLog != nil {
-		logger.LogDebug(ctx.LocalLog, constants.LogInfo,
-			"Worker %d started", workerID)
-	}
+	results := make([]bool, constants.AddressCheckerBatchSize)
+	balances := make([]int64, constants.AddressCheckerBatchSize)
 
 	for {
 		select {
-		case <-ctx.ShutdownChan: // Add shutdown check
+		case <-p.done: // Check done channel
 			if len(batch) > 0 {
-				if constants.DebugMode && ctx.LocalLog != nil {
-					logger.LogDebug(ctx.LocalLog, constants.LogInfo,
-						"Worker %d processing final batch before shutdown", workerID)
-				}
-				p.processAddressBatch(ctx, batch, addresses)
-			}
-			if constants.DebugMode && ctx.LocalLog != nil {
-				logger.LogDebug(ctx.LocalLog, constants.LogInfo,
-					"Worker %d shutting down from shutdown signal", workerID)
+				p.processAddressBatch(ctx, batch, addresses, results, balances)
 			}
 			return
-
-		case addr, ok := <-p.workChan:
+		case wallet, ok := <-p.workChan:
 			if !ok {
 				if len(batch) > 0 {
-					if constants.DebugMode && ctx.LocalLog != nil {
-						logger.LogDebug(ctx.LocalLog, constants.LogInfo,
-							"Worker %d processing final batch on channel close", workerID)
-					}
-					p.processAddressBatch(ctx, batch, addresses)
-				}
-				if constants.DebugMode && ctx.LocalLog != nil {
-					logger.LogDebug(ctx.LocalLog, constants.LogInfo,
-						"Worker %d shutting down from channel close", workerID)
+					p.processAddressBatch(ctx, batch, addresses, results, balances)
 				}
 				return
 			}
 
-			batch = append(batch, addr)
-			addresses = append(addresses, addr.Address)
+			batch = append(batch, wallet)
+			addresses = append(addresses, wallet.Address)
 
-			// Process when batch is full
 			if len(batch) >= constants.AddressCheckerBatchSize {
-				if constants.DebugMode && ctx.LocalLog != nil {
-					logger.LogDebug(ctx.LocalLog, constants.LogInfo,
-						"Worker %d processing batch of %d addresses",
-						workerID, len(batch))
-				}
-				p.processAddressBatch(ctx, batch, addresses)
+				p.processAddressBatch(ctx, batch, addresses, results, balances)
 				batch = batch[:0]
 				addresses = addresses[:0]
 			}
@@ -112,10 +96,15 @@ func (p *workerPool) startWorker(ctx *AppContext, workerID int) {
 	}
 }
 
-func (p *workerPool) processAddressBatch(ctx *AppContext, batch []*WalletInfo, addresses []string) {
-	// Pre-allocate all slices at once
-	results := make([]bool, len(addresses))
-	balances := make([]int64, len(addresses))
+func (p *workerPool) processAddressBatch(ctx *AppContext,
+	batch []*WalletInfo,
+	addresses []string,
+	results []bool,
+	balances []int64) {
+
+	// Resize slices to match batch size
+	results = results[:len(addresses)]
+	balances = balances[:len(addresses)]
 
 	// Single batch check
 	ctx.Parser.CheckAddressBatch(addresses, results, balances)
@@ -125,14 +114,12 @@ func (p *workerPool) processAddressBatch(ctx *AppContext, batch []*WalletInfo, a
 			constants.IncrementFound()
 			wallet := batch[i]
 
-			// Log found address details
 			logger.LogStatus(ctx.LocalLog, constants.LogCheck,
 				"🎯 FOUND: %s Balance: %.8f BTC Key: %x",
 				addresses[i],
 				float64(balances[i])/100000000,
 				wallet.PrivateKey.Serialize())
 
-			// Write to file asynchronously
 			go utils.WriteFound(addresses[i], balances[i])
 		}
 	}
@@ -167,7 +154,16 @@ func runAddressChecker(ctx *AppContext) {
 		case <-state.ticker.C:
 			logProgress(ctx, state)
 		case <-state.readyForMore:
-			processBatch(ctx, state, workers)
+			select {
+			case <-ctx.ShutdownChan:
+				return
+			default:
+				processBatch(ctx, state, workers)
+			}
+		case <-time.After(30 * time.Second): // Add timeout
+			logger.LogStatus(ctx.LocalLog, constants.LogWarn,
+				"Address checker seems stuck, checking state...")
+			// Could add additional diagnostic logging here
 		}
 	}
 }
@@ -186,6 +182,7 @@ func processBatch(ctx *AppContext, state *checkerState, workers *workerPool) {
 	filledCount := fillBatchAddresses(ctx, state)
 
 	if filledCount == 0 {
+		time.Sleep(10 * time.Millisecond) // Add small sleep when no work
 		select {
 		case <-ctx.ShutdownChan:
 			return
@@ -195,15 +192,29 @@ func processBatch(ctx *AppContext, state *checkerState, workers *workerPool) {
 		return
 	}
 
-	// Process entire batch at once
+	// Pre-allocate results and balances slices
+	results := make([]bool, constants.AddressCheckerBatchSize)
+	balances := make([]int64, constants.AddressCheckerBatchSize)
+
+	// Process with backpressure
 	for _, addr := range state.addresses {
 		select {
 		case <-ctx.ShutdownChan:
 			return
 		case workers.workChan <- addr:
 		default:
-			// If channel is full, process synchronously
-			workers.processAddressBatch(ctx, []*WalletInfo{addr}, []string{addr.Address})
+			// Channel full - wait briefly
+			time.Sleep(time.Millisecond)
+			select {
+			case workers.workChan <- addr:
+			default:
+				// Still full - process synchronously
+				workers.processAddressBatch(ctx,
+					[]*WalletInfo{addr},
+					[]string{addr.Address},
+					results[:1],  // Use just first element
+					balances[:1]) // Use just first element
+			}
 		}
 	}
 
@@ -259,6 +270,7 @@ func StartAddressChecker(ctx *AppContext) {
 }
 
 func (p *workerPool) shutdown() {
-	close(p.workChan)
-	p.wg.Wait()
+	close(p.done)     // Signal workers to stop
+	p.wg.Wait()       // Wait for workers to finish
+	close(p.workChan) // Safe to close work channel now
 }

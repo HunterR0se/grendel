@@ -179,10 +179,15 @@ func CalculateMemoryLimits() *MemoryLimits {
 
 	availableRAM := float64(v.Available)
 	totalRAM := float64(v.Total)
+
+	// Use only 70% of available memory
 	targetMemory := totalRAM * constants.MemoryTarget
 
-	// maxItems := int(totalRAM / structSize)
-	// batchSize := max(min(maxItems/10, constants.MaxBlockFiles), constants.ImportBatchSize)
+	// Add safety checks
+	maxAllowed := totalRAM * 0.80 // Never use more than 80% of total RAM
+	if targetMemory > maxAllowed {
+		targetMemory = maxAllowed
+	}
 
 	return &MemoryLimits{
 		BlockCache:     int(targetMemory * constants.BlockCacheProportion),
@@ -192,7 +197,7 @@ func CalculateMemoryLimits() *MemoryLimits {
 		Total:          totalRAM / gb,
 		NumWorkers:     constants.NumWorkers,
 		BatchSize:      constants.ImportBatchSize,
-		ChannelBuffer:  constants.ImportBatchSize * 2,
+		ChannelBuffer:  constants.ImportBatchSize, // Reduced multiplier
 		RNGPoolSize:    constants.RNGPoolSize,
 	}
 }

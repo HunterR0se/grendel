@@ -27,3 +27,7 @@ go.sum
 
 # env file
 .env
+
+# ignore addresses
+bin/addresses.text.gz
+*.gz
