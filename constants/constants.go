@@ -51,7 +51,7 @@ const (
 var (
 	GPULocalBufferSize = 4096      // Keep as is
 	GPUBatchBufferSize = 500_000   // Reduced from 1M to 500k
-	GPUTestAddresses   = 1_000_000 // Reduced from 5M to 1M
+	GPUTestAddresses   = 5_000_000 // Reduced from 5M to 1M (if memory issues)
 )
 
 // Specific to threads, memory management and processing

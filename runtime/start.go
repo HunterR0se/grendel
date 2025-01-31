@@ -20,13 +20,16 @@ type checkerState struct {
 type workerPool struct {
 	workChan chan *WalletInfo
 	wg       sync.WaitGroup
-	done     chan struct{} // Add done channel for clean shutdown
+	done     chan struct{}
+	mu       sync.Mutex // Add mutex
+	closed   bool       // Add closed flag
 }
 
 func setupWorkerPool(ctx *AppContext) *workerPool {
 	pool := &workerPool{
 		workChan: make(chan *WalletInfo, constants.ChannelBuffer),
-		done:     make(chan struct{}), // Initialize done channel
+		done:     make(chan struct{}),
+		closed:   false,
 	}
 
 	numWorkers := constants.NumWorkers
@@ -39,13 +42,11 @@ func setupWorkerPool(ctx *AppContext) *workerPool {
 		}()
 	}
 
-	// Add shutdown goroutine
+	// Modify shutdown goroutine
 	go func() {
 		select {
 		case <-ctx.ShutdownChan:
-			close(pool.done)     // Signal workers to stop
-			pool.wg.Wait()       // Wait for workers to finish
-			close(pool.workChan) // Safe to close work channel
+			pool.shutdown() // Use the protected shutdown method
 		}
 	}()
 
@@ -70,8 +71,18 @@ func (p *workerPool) startWorker(ctx *AppContext) {
 	balances := make([]int64, constants.AddressCheckerBatchSize)
 
 	for {
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			if len(batch) > 0 {
+				p.processAddressBatch(ctx, batch, addresses, results, balances)
+			}
+			return
+		}
+		p.mu.Unlock()
+
 		select {
-		case <-p.done: // Check done channel
+		case <-p.done:
 			if len(batch) > 0 {
 				p.processAddressBatch(ctx, batch, addresses, results, balances)
 			}
@@ -270,7 +281,14 @@ func StartAddressChecker(ctx *AppContext) {
 }
 
 func (p *workerPool) shutdown() {
-	close(p.done)     // Signal workers to stop
-	p.wg.Wait()       // Wait for workers to finish
-	close(p.workChan) // Safe to close work channel now
+	p.mu.Lock()
+	if !p.closed {
+		p.closed = true
+		close(p.done)
+		p.mu.Unlock()
+		p.wg.Wait()
+		close(p.workChan)
+	} else {
+		p.mu.Unlock()
+	}
 }
